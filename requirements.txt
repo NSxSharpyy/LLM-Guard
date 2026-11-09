@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+httpx
+pydantic
+presidio-analyzer
+presidio-anonymizer
+spacy
+onnxruntime
+transformers
+torch
+tiktoken
+redis
+streamlit
+structlog
+pytest
