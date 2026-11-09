@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-guard.local/schemas/siem_event.schema.json",
+  "title": "LLM-Guard SIEM Security Event",
+  "description": "Standard security telemetry event for SIEM ingestion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "timestamp",
+    "trace_id",
+    "client_ip",
+    "user_id",
+    "user_role",
+    "action",
+    "rule_id",
+    "ml_score",
+    "latency_ms"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "client_ip": {
+      "type": "string",
+      "format": "ipv4"
+    },
+    "user_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "user_role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "type": "string",
+      "enum": ["ALLOW", "BLOCK"]
+    },
+    "rule_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ml_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0
+    }
+  }
+}
