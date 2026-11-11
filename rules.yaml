@@ -1,6 +1,6 @@
-
 # LLM-Guard Firewall Rules
 # Day 1 - Frozen Rule Schema Specification
+# Day 2 - Jailbreak Signatures
 
 rules:
   - rule_id: "SEC-001"
@@ -17,4 +17,28 @@ rules:
     match_type: "regex"
     severity: "WARN"
     action: "ALERT"
+    enabled: true
+
+  - rule_id: "SEC-003"
+    name: "Ignore All Previous Instructions"
+    pattern: "ignore all previous instructions"
+    match_type: "regex"
+    severity: "CRITICAL"
+    action: "DROP"
+    enabled: true
+
+  - rule_id: "SEC-004"
+    name: "DAN Mode Jailbreak"
+    pattern: "you are now in DAN mode"
+    match_type: "regex"
+    severity: "CRITICAL"
+    action: "DROP"
+    enabled: true
+
+  - rule_id: "SEC-005"
+    name: "Disregard Safety Guidelines"
+    pattern: "disregard safety guidelines"
+    match_type: "regex"
+    severity: "CRITICAL"
+    action: "DROP"
     enabled: true
