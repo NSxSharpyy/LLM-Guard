@@ -97,12 +97,10 @@ def test_entity_metadata_is_valid(engine):
         ]
 
         assert entity["start"] < entity["end"]
-        assert entity["original_value"] == text[
-            entity["start"]:entity["end"]
-        ]
-
         assert 0 <= entity["score"] <= 1
 
+        # Raw sensitive values must not be included by default.
+        assert "original_value" not in entity
 
 def test_engine_does_not_modify_original_input(engine):
     text = "Email john@example.com"
@@ -167,3 +165,15 @@ def test_redaction_is_idempotent(engine):
 
     assert masked_twice == masked_once
     assert entities_twice == []
+
+def test_original_value_is_available_when_explicitly_enabled():
+    engine = DLPEngine(include_original_value=True)
+
+    _, entities = engine.redact("Contact me at john@example.com")
+
+    email_entity = next(
+        entity for entity in entities
+        if entity["entity_type"] == "EMAIL_ADDRESS"
+    )
+
+    assert email_entity["original_value"] == "john@example.com"
