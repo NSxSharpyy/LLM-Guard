@@ -1,0 +1,20 @@
+
+# LLM-Guard Firewall Rules
+# Day 1 - Frozen Rule Schema Specification
+
+rules:
+  - rule_id: "SEC-001"
+    name: "Critical Exact Match Sample"
+    pattern: "ignore previous instructions"
+    match_type: "exact"
+    severity: "CRITICAL"
+    action: "DROP"
+    enabled: true
+
+  - rule_id: "SEC-002"
+    name: "Warning Regex Sample"
+    pattern: "^sample-warning-pattern$"
+    match_type: "regex"
+    severity: "WARN"
+    action: "ALERT"
+    enabled: true
