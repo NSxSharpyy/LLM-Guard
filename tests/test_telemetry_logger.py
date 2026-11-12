@@ -140,3 +140,106 @@ def test_logging_after_close_is_rejected(tmp_path):
 
     with pytest.raises(RuntimeError):
         telemetry.log_event(make_event())
+
+
+def test_high_severity_event_is_written_to_audit_sink(tmp_path):
+    log_path = tmp_path / "security_events.jsonl"
+    audit_path = tmp_path / "audit_security.jsonl"
+    event = make_event()
+
+    with SecurityTelemetryLogger(
+        log_path=log_path,
+        audit_log_path=audit_path,
+    ) as telemetry:
+        telemetry.log_event(event)
+
+    normal_events = read_events(log_path)
+    audit_events = read_events(audit_path)
+
+    assert normal_events == [event]
+    assert audit_events == [event]
+
+
+def test_allowed_high_score_event_is_not_audited(tmp_path):
+    log_path = tmp_path / "security_events.jsonl"
+    audit_path = tmp_path / "audit_security.jsonl"
+
+    event = make_event()
+    event["action"] = "ALLOW"
+    event["ml_score"] = 0.99
+
+    with SecurityTelemetryLogger(
+        log_path=log_path,
+        audit_log_path=audit_path,
+    ) as telemetry:
+        telemetry.log_event(event)
+
+    assert read_events(log_path) == [event]
+    assert not audit_path.exists() or read_events(audit_path) == []
+
+
+def test_block_at_exact_threshold_is_not_audited(tmp_path):
+    log_path = tmp_path / "security_events.jsonl"
+    audit_path = tmp_path / "audit_security.jsonl"
+
+    event = make_event()
+    event["ml_score"] = 0.90
+
+    with SecurityTelemetryLogger(
+        log_path=log_path,
+        audit_log_path=audit_path,
+    ) as telemetry:
+        telemetry.log_event(event)
+
+    assert read_events(log_path) == [event]
+    assert not audit_path.exists() or read_events(audit_path) == []
+
+
+def test_audit_log_appends_across_logger_instances(tmp_path):
+    audit_path = tmp_path / "audit_security.jsonl"
+
+    first_event = make_event(101)
+    second_event = make_event(102)
+
+    with SecurityTelemetryLogger(
+        log_path=tmp_path / "first.jsonl",
+        audit_log_path=audit_path,
+    ) as telemetry:
+        telemetry.log_event(first_event)
+
+    with SecurityTelemetryLogger(
+        log_path=tmp_path / "second.jsonl",
+        audit_log_path=audit_path,
+    ) as telemetry:
+        telemetry.log_event(second_event)
+
+    audit_events = read_events(audit_path)
+
+    assert audit_events == [first_event, second_event]
+
+
+def test_audit_event_preserves_frozen_schema(tmp_path):
+    log_path = tmp_path / "security_events.jsonl"
+    audit_path = tmp_path / "audit_security.jsonl"
+    event = make_event()
+
+    with SecurityTelemetryLogger(
+        log_path=log_path,
+        audit_log_path=audit_path,
+    ) as telemetry:
+        telemetry.log_event(event)
+
+    audit_event = read_events(audit_path)[0]
+
+    assert set(audit_event) == set(event)
+    assert "severity" not in audit_event
+
+
+def test_normal_and_audit_paths_must_be_different(tmp_path):
+    same_path = tmp_path / "security_events.jsonl"
+
+    with pytest.raises(ValueError):
+        SecurityTelemetryLogger(
+            log_path=same_path,
+            audit_log_path=same_path,
+        )
