@@ -13,7 +13,7 @@ def test_email_detection_and_redaction(engine):
 
     masked, entities = engine.redact(text)
 
-    assert "<REDACTED_EMAIL_ADDRESS>" in masked
+    assert "<EMAIL_1>" in masked
     assert "john.smith@example.com" not in masked
     assert any(e["entity_type"] == "EMAIL_ADDRESS" for e in entities)
 
@@ -23,7 +23,7 @@ def test_phone_detection_and_redaction(engine):
 
     masked, entities = engine.redact(text)
 
-    assert "<REDACTED_PHONE_NUMBER>" in masked
+    assert "<PHONE_1>" in masked
     assert "+91 9876543210" not in masked
     assert any(e["entity_type"] == "PHONE_NUMBER" for e in entities)
 
@@ -42,8 +42,8 @@ def test_multiple_pii_redaction(engine):
     assert "EMAIL_ADDRESS" in entity_types
     assert "PHONE_NUMBER" in entity_types
 
-    assert "<REDACTED_EMAIL_ADDRESS>" in masked
-    assert "<REDACTED_PHONE_NUMBER>" in masked
+    assert "<EMAIL_1>" in masked
+    assert "<PHONE_1>" in masked
 
     assert "john@example.com" not in masked
     assert "+91 9876543210" not in masked
@@ -145,7 +145,7 @@ def test_preserves_surrounding_text_exactly(engine):
 
     masked, entities = engine.redact(text)
 
-    assert masked == "Please email <REDACTED_EMAIL_ADDRESS> before Friday."
+    assert masked == "Please email <EMAIL_1> before Friday."
     assert len(entities) == 1
 
 
@@ -153,7 +153,7 @@ def test_handles_text_containing_only_pii(engine):
     """A string containing only an email should be fully redacted."""
     masked, entities = engine.redact("john@acme.com")
 
-    assert masked == "<REDACTED_EMAIL_ADDRESS>"
+    assert masked == "<EMAIL_1>"
     assert len(entities) == 1
     assert entities[0]["entity_type"] == "EMAIL_ADDRESS"
 
