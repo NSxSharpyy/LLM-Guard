@@ -5,39 +5,49 @@
 ## Project Overview
 
 LLM-Guard DLP is designed to identify sensitive information before it is exposed to Large Language Models or external services.
+The system uses Microsoft Presidio for Personally Identifiable Information (PII) detection and anonymization, along with custom recognizers and deterministic placeholders to protect sensitive information in LLM workflows.
 
-The system uses Microsoft Presidio for Personally Identifiable Information (PII) detection and anonymization, with plans to introduce custom recognizers for additional sensitive information.
 
-## Current Implementation — Day 1
+## Current Implementation — Days 1–5
 
-The initial setup includes:
+The project currently implements the following capabilities:
 
-- Presidio Analyzer for sensitive entity detection.
-- Presidio Anonymizer for replacing detected sensitive information.
+### Day 1 – Environment Setup and PII Detection
+- Microsoft Presidio Analyzer integration.
+- Presidio Anonymizer integration.
 - spaCy English NLP model.
-- Basic PII detection and validation tests.
+- Initial PII detection and validation.
 
-### Verified Detection Capabilities
+### Day 2 – PII Redaction
+- Sensitive entity redaction.
+- Anonymization validation.
+- Regression testing.
 
-| Entity | Description |
-|---|---|
-| EMAIL_ADDRESS | Email addresses |
-| PHONE_NUMBER | Telephone numbers |
-| PERSON | Individual names |
-| US_SSN | US Social Security Numbers (detection is value-dependent; see entity catalog) |
-| CREDIT_CARD | Credit card numbers |
+### Day 3 – Custom Recognizers
+- Custom sensitive-information recognizers.
+- Integration with the detection pipeline.
+- Recognizer validation tests.
 
-### Anonymization
+### Day 4 – Deterministic Placeholder Masking
+- Semantic placeholders such as `<EMAIL_1>` and `<PHONE_1>`.
+- Deterministic placeholder assignment.
+- Reversible mapping support.
 
-Detected information can be replaced with entity-based placeholders.
+### Day 5 – Session-Scoped Reversible Vault
+- In-memory placeholder-to-original-value storage.
+- Independent mappings for each session.
+- Thread-safe storage and retrieval.
+- Session cleanup.
+- Protection against cross-session data access.
+- Concurrent session access testing.
 
-Example:
+### Validation
 
-**Original:**
-`My name is John Smith and my email is john.smith@example.com`
+The complete regression suite currently reports:
 
-**Anonymized:**
-`My name is <PERSON> and my email is <EMAIL_ADDRESS>`
+- 80 tests passed.
+- Python compilation successful.
+- One third-party spaCy/Click deprecation warning.
 
 ## Technology Stack
 
@@ -94,29 +104,56 @@ python -m pytest -v
 ```text
 llm-guard-dlp/
 ├── dlp/
+│   ├── __init__.py
+│   ├── custom_recognizers.py
+│   ├── dlp_engine.py
+│   ├── placeholder_manager.py
+│   ├── vault.py
+│   └── verhoeff.py
 ├── docs/
 │   └── entity-catalog.md
 ├── scripts/
 │   └── verify_setup.py
 ├── tests/
-│   └── test_day1_setup.py
+│   ├── test_day1_setup.py
+│   ├── test_day2_redaction.py
+│   ├── test_day3_custom_recognizers.py
+│   ├── test_day4_placeholders.py
+│   └── test_day5_vault.py
 ├── requirements.txt
 ├── README.md
 └── .gitignore
 ```
 
+## Vault Security and Retention Notes
+
+- The vault isolates mappings by session ID but does not authenticate users. Session IDs must be securely generated and protected by the application.
+- The current vault uses in-memory storage and does not have automatic expiration.
+- `clear_session()` provides manual session cleanup.
+- Future monitoring should count unknown-session unmask attempts without logging sensitive text.
+- Redis-backed storage with a 15-minute TTL is planned for Day 9.
+
 ## Development Roadmap
 
-The project will progressively introduce:
+Completed:
+- Environment setup and PII detection.
+- PII redaction.
+- Custom sensitive-information recognizers.
+- Deterministic semantic placeholder masking.
+- Session-scoped reversible vault.
 
-- Custom PII and credential recognizers.
-- Advanced detection and anonymization.
+Upcoming:
 - LLM prompt inspection.
 - Sensitive information leakage prevention.
 - Security validation and testing.
+- Redis-backed vault with automatic expiration.
 
 ## Project Status
 
-Day 1: Environment setup, Presidio integration, initial detection, anonymization verification and entity catalog.
+Days 1–5: Implementation and validation completed.
 
-Further functionality will be implemented and validated in subsequent development stages.
+Latest validation:
+- 80 tests passed.
+- Python compilation successful.
+- Session-isolation security check passed.
+- One third-party spaCy/Click deprecation warning.
