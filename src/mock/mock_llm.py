@@ -34,6 +34,7 @@ async def generate_token_stream(
     completion_id: str,
     model_name: str,
     token_count: int | None = None,
+    benchmark_mode: bool = False,
     min_jitter_ms: int = 100,
     max_jitter_ms: int = 500,
 ) -> AsyncGenerator[str, None]:
@@ -57,7 +58,7 @@ async def generate_token_stream(
         use_jitter = False
     else:
         tokens_to_emit = DEFAULT_RESPONSE_TOKENS
-        use_jitter = True
+        use_jitter = not benchmark_mode
 
     for token in tokens_to_emit:
         if use_jitter:
@@ -98,6 +99,7 @@ async def generate_token_stream(
 async def chat_completions(
     request: ChatCompletionRequest,
     x_mock_token_count: int | None = Header(default=None),
+    x_mock_benchmark_mode: bool = Header(default=False),
 ):
     """OpenAI-compatible chat completions endpoint."""
     if not request.messages:
@@ -112,6 +114,7 @@ async def chat_completions(
                 completion_id=completion_id,
                 model_name=request.model,
                 token_count=x_mock_token_count,
+                benchmark_mode=x_mock_benchmark_mode,
                 min_jitter_ms=100,
                 max_jitter_ms=500,
             ),
@@ -123,7 +126,9 @@ async def chat_completions(
             },
         )
 
-    await asyncio.sleep(0.2)
+    if not x_mock_benchmark_mode:
+        await asyncio.sleep(0.2)
+
     full_content = "".join(DEFAULT_RESPONSE_TOKENS).strip()
 
     return ChatCompletionResponse(

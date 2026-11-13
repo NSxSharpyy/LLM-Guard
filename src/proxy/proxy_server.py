@@ -7,6 +7,7 @@ from typing import AsyncGenerator, AsyncIterator
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from starlette.requests import ClientDisconnect
 
 UPSTREAM_BASE_URL = os.getenv("UPSTREAM_BASE_URL", "http://127.0.0.1:8001")
 
@@ -64,6 +65,8 @@ async def stream_upstream_bytes(
         async for chunk in upstream_resp.aiter_raw():
             if chunk:
                 yield chunk
+    except (ClientDisconnect, GeneratorExit):
+        pass
     finally:
         await upstream_resp.aclose()
 
