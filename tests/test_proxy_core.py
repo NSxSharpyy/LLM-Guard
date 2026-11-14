@@ -1,4 +1,3 @@
-# File: tests/test_proxy_core.py
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -6,6 +5,8 @@ from httpx import ASGITransport, AsyncClient
 from src.mock.mock_llm import app as mock_app
 from src.proxy.proxy_server import app as proxy_app
 from src.proxy.proxy_server import state
+
+AUTH_HEADERS = {"Authorization": "Bearer sk-guard-dev-tenant-001"}
 
 
 @pytest.mark.asyncio
@@ -19,9 +20,9 @@ async def test_proxy_healthcheck() -> None:
 
 @pytest.mark.asyncio
 async def test_proxy_transparent_forwarding_and_latency_header() -> None:
+    await state.rate_limiter.reset()
     mock_transport = ASGITransport(app=mock_app)
     mock_client = AsyncClient(transport=mock_transport, base_url="http://mockupstream")
-    
     state.client = mock_client
 
     try:
@@ -32,14 +33,14 @@ async def test_proxy_transparent_forwarding_and_latency_header() -> None:
                 "messages": [{"role": "user", "content": "Latency verification"}],
                 "stream": False,
             }
-            res = await pclient.post("/v1/chat/completions", json=payload)
-            
+            res = await pclient.post("/v1/chat/completions", json=payload, headers=AUTH_HEADERS)
+
             assert res.status_code == 200
             data = res.json()
             assert data["model"] == "mock-llama-3"
             assert "upstream mock LLM" in data["choices"][0]["message"]["content"]
-            
-            # Verify proxy transit latency tracking
+            assert res.headers["x-tenant-id"] == "tenant-dev-001"
+
             assert "x-proxy-latency-ms" in res.headers
             overhead = float(res.headers["x-proxy-latency-ms"])
             assert overhead > 0.0
@@ -50,6 +51,7 @@ async def test_proxy_transparent_forwarding_and_latency_header() -> None:
 
 @pytest.mark.asyncio
 async def test_proxy_upstream_down_bad_gateway() -> None:
+    await state.rate_limiter.reset()
     dead_client = httpx.AsyncClient(base_url="http://127.0.0.1:9999")
     state.client = dead_client
 
@@ -61,7 +63,7 @@ async def test_proxy_upstream_down_bad_gateway() -> None:
                 "messages": [{"role": "user", "content": "Will fail"}],
                 "stream": False,
             }
-            res = await pclient.post("/v1/chat/completions", json=payload)
+            res = await pclient.post("/v1/chat/completions", json=payload, headers=AUTH_HEADERS)
             assert res.status_code == 502
             assert "Bad Gateway" in res.json()["detail"]
     finally:

@@ -39,7 +39,7 @@ async def run_unary_worker(
         "messages": [{"role": "user", "content": "Benchmark unary latency"}],
         "stream": False,
     }
-    headers = {"X-Mock-Benchmark-Mode": "true"}
+    headers = {"X-Mock-Benchmark-Mode": "true", "Authorization": "Bearer sk-guard-bench-enterprise-999"}
 
     async with semaphore:
         t_start = time.perf_counter()
@@ -69,7 +69,7 @@ async def run_streaming_worker(
         "messages": [{"role": "user", "content": "Benchmark SSE streaming latency"}],
         "stream": True,
     }
-    headers = {"X-Mock-Benchmark-Mode": "true"}
+    headers = {"X-Mock-Benchmark-Mode": "true", "Authorization": "Bearer sk-guard-bench-enterprise-999"}
 
     async with semaphore:
         t_start = time.perf_counter()

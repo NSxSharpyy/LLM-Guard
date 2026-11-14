@@ -8,10 +8,12 @@ from src.mock.mock_llm import app as mock_app
 from src.proxy.proxy_server import app as proxy_app
 from src.proxy.proxy_server import state
 
+AUTH_HEADERS = {"Authorization": "Bearer sk-guard-dev-tenant-001"}
+
 
 @pytest.mark.asyncio
 async def test_proxy_sse_streaming_passthrough() -> None:
-    """Verifies real-time SSE chunk passthrough from upstream mock to client."""
+    await state.rate_limiter.reset()
     mock_transport = ASGITransport(app=mock_app)
     mock_client = AsyncClient(transport=mock_transport, base_url="http://mockupstream")
     state.client = mock_client
@@ -24,7 +26,9 @@ async def test_proxy_sse_streaming_passthrough() -> None:
                 "messages": [{"role": "user", "content": "Stream via proxy"}],
                 "stream": True,
             }
-            async with pclient.stream("POST", "/v1/chat/completions", json=payload) as res:
+            async with pclient.stream(
+                "POST", "/v1/chat/completions", json=payload, headers=AUTH_HEADERS
+            ) as res:
                 assert res.status_code == 200
                 assert "text/event-stream" in res.headers["content-type"]
                 assert "x-proxy-ttft-ms" in res.headers
@@ -50,10 +54,7 @@ async def test_proxy_sse_streaming_passthrough() -> None:
 
 @pytest.mark.asyncio
 async def test_4000_token_stream_memory_footprint() -> None:
-    """
-    Verifies Day 4 KPI: Streaming 4,000 tokens keeps memory growth flat (<30MB)
-    without stalling or buffering the full response in RAM.
-    """
+    await state.rate_limiter.reset()
     process = psutil.Process(os.getpid())
     rss_before_mb = process.memory_info().rss / (1024 * 1024)
 
@@ -69,7 +70,10 @@ async def test_4000_token_stream_memory_footprint() -> None:
                 "messages": [{"role": "user", "content": "Generate 4000 tokens"}],
                 "stream": True,
             }
-            headers = {"X-Mock-Token-Count": "4000"}
+            headers = {
+                **AUTH_HEADERS,
+                "X-Mock-Token-Count": "4000",
+            }
 
             token_chunks_count = 0
             done_received = False

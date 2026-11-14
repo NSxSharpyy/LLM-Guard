@@ -9,11 +9,15 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.requests import ClientDisconnect
 
+from src.security.auth import authenticate_request
+from src.security.rate_limiter import SlidingWindowRateLimiter
+
 UPSTREAM_BASE_URL = os.getenv("UPSTREAM_BASE_URL", "http://127.0.0.1:8001")
 
 
 class ProxyState:
     client: httpx.AsyncClient | None = None
+    rate_limiter: SlidingWindowRateLimiter = SlidingWindowRateLimiter(window_seconds=60.0)
 
 
 state = ProxyState()
@@ -43,14 +47,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="LLM-Guard AI Firewall Proxy",
-    description="Core Reverse Proxy Middleware Layer with Zero-Buffer SSE Streaming",
-    version="1.0.0",
+    description="Core Reverse Proxy Middleware Layer with Auth, Rate Limiting & Zero-Buffer SSE",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
 
 @app.get("/healthz")
 async def healthcheck() -> dict[str, str]:
+    """Unauthenticated liveness probe for container orchestrators."""
     return {"status": "healthy", "service": "llm_guard_proxy", "port": "8000"}
 
 
@@ -73,6 +78,15 @@ async def stream_upstream_bytes(
 
 @app.post("/v1/chat/completions")
 async def proxy_chat_completions(request: Request) -> Response:
+    # Stage 1: Authenticate API Key & Resolve Tenant Context
+    tenant = authenticate_request(request)
+
+    # Stage 2: Enforce Sliding-Window Per-Tenant Rate Limit
+    rl_info = await state.rate_limiter.check_and_record(
+        tenant_id=tenant.tenant_id,
+        rpm_limit=tenant.rpm_limit,
+    )
+
     if state.client is None:
         raise HTTPException(status_code=500, detail="Proxy client uninitialized")
 
@@ -89,10 +103,19 @@ async def proxy_chat_completions(request: Request) -> Response:
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Malformed JSON payload")
 
+    # Strip hop-by-hop headers AND client proxy Authorization token before forwarding upstream
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length")
+        if k.lower() not in ("host", "content-length", "authorization")
+    }
+
+    security_headers = {
+        "X-Tenant-Id": tenant.tenant_id,
+        "X-RateLimit-Limit": str(rl_info.limit),
+        "X-RateLimit-Remaining": str(rl_info.remaining),
+        "X-RateLimit-Reset": str(rl_info.reset_seconds),
+        "X-LLM-Guard-Version": "1.1.0",
     }
 
     t_start = time.perf_counter()
@@ -124,6 +147,7 @@ async def proxy_chat_completions(request: Request) -> Response:
             return Response(
                 content=err_body,
                 status_code=upstream_resp.status_code,
+                headers=security_headers,
                 media_type=upstream_resp.headers.get("content-type", "application/json"),
             )
 
@@ -134,7 +158,7 @@ async def proxy_chat_completions(request: Request) -> Response:
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
             "X-Proxy-TTFT-Ms": f"{ttft_ms:.2f}",
-            "X-LLM-Guard-Version": "1.0.0",
+            **security_headers,
         }
 
         return StreamingResponse(
@@ -166,7 +190,7 @@ async def proxy_chat_completions(request: Request) -> Response:
 
     response_headers = dict(upstream_resp.headers)
     response_headers["X-Proxy-Latency-Ms"] = f"{transit_latency_ms:.2f}"
-    response_headers["X-LLM-Guard-Version"] = "1.0.0"
+    response_headers.update(security_headers)
 
     return Response(
         content=upstream_resp.content,
