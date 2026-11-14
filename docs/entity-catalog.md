@@ -9,8 +9,14 @@ These entities are available through the installed Presidio Analyzer.
 | EMAIL_ADDRESS | Email addresses | Day 2 implemented and tested |
 | PHONE_NUMBER | Telephone numbers | Day 2 implemented and tested |
 | PERSON | Individual names | Day 1 analyzer verified; excluded from active redaction scope |
-| CREDIT_CARD | Credit card numbers | Day 1 spot-tested |
-| US_SSN | US Social Security Numbers | Day 1 spot-tested; value-dependent |
+| CREDIT_CARD | Credit card numbers | Day 1 spot-tested; not included in active redaction scope |
+| US_SSN | US Social Security Numbers | Day 1 spot-tested; not included in active redaction scope |
+
+**Known limitation:** CREDIT_CARD and US_SSN were spot-tested during
+Day 1 but are not included in `DLPEngine.SUPPORTED_ENTITIES`.
+They are not currently covered by the active redaction pipeline.
+Dedicated implementation and regression tests are required before
+these entity types can be considered supported.
 
 ## 2. Active Redaction Scope
 
