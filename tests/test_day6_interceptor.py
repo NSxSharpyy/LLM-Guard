@@ -2,7 +2,7 @@
 import pytest
 
 from dlp import DLPInterceptor
-
+from concurrent.futures import ThreadPoolExecutor
 
 @pytest.fixture
 def interceptor():
@@ -189,3 +189,160 @@ def test_empty_text(interceptor):
 
     assert masked == ""
     assert entities == []
+
+
+def test_concurrent_redaction_same_session(interceptor):
+    session = "concurrent-session"
+
+    def redact_email(_):
+        return interceptor.redact(
+            "Contact john@example.com",
+            session,
+        )[0]
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(redact_email, range(20)))
+
+    assert all(result == "Contact <EMAIL_1>" for result in results)
+
+    assert interceptor.unmask(
+        "Contact <EMAIL_1>",
+        session,
+    ) == "Contact john@example.com"
+
+
+def test_detection_exception_does_not_create_session(
+    interceptor,
+    monkeypatch,
+):
+    session = "detection-error-session"
+
+    def raise_error(*args, **kwargs):
+        raise RuntimeError("Simulated detection failure")
+
+    monkeypatch.setattr(
+        interceptor._engine,
+        "redact",
+        raise_error,
+    )
+
+    with pytest.raises(RuntimeError):
+        interceptor.redact(
+            "Contact john@example.com",
+            session,
+        )
+
+    assert interceptor.active_session_count() == 0
+    assert session not in interceptor._session_managers
+
+
+
+def test_placeholder_exception_does_not_leave_partial_session(
+    interceptor,
+    monkeypatch,
+):
+    from dlp.placeholder_manager import PlaceholderManager
+
+    session = "placeholder-error-session"
+
+    # Simulate an entity returned by the detection engine.
+    def fake_engine_redact(text):
+        return text, [
+            {
+                "entity_type": "EMAIL_ADDRESS",
+                "start": 8,
+                "end": 24,
+                "original_value": "john@example.com",
+            }
+        ]
+
+    monkeypatch.setattr(
+        interceptor._engine,
+        "redact",
+        fake_engine_redact,
+    )
+
+    # Raise specifically during interceptor placeholder generation.
+    original_method = PlaceholderManager.get_placeholder
+
+    def raise_after_generation(self, entity_type, original_value):
+        original_method(self, entity_type, original_value)
+        raise RuntimeError("Simulated placeholder failure")
+
+    monkeypatch.setattr(
+        PlaceholderManager,
+        "get_placeholder",
+        raise_after_generation,
+    )
+
+    with pytest.raises(RuntimeError):
+        interceptor.redact("Contact john@example.com", session)
+
+    assert interceptor.active_session_count() == 0
+    assert session not in interceptor._session_managers
+
+def test_placeholder_exception_preserves_existing_session(
+    interceptor,
+    monkeypatch,
+):
+    from dlp.placeholder_manager import PlaceholderManager
+
+    session = "existing-session-error"
+
+    # First redaction succeeds and creates EMAIL_1.
+    masked_text, _ = interceptor.redact(
+        "Contact john@example.com",
+        session,
+    )
+
+    assert masked_text == "Contact <EMAIL_1>"
+
+    # Simulate a second redaction for a different email.
+    def fake_engine_redact(text):
+        return text, [
+            {
+                "entity_type": "EMAIL_ADDRESS",
+                "start": 8,
+                "end": 24,
+                "original_value": "jane@example.com",
+            }
+        ]
+
+    monkeypatch.setattr(
+        interceptor._engine,
+        "redact",
+        fake_engine_redact,
+    )
+
+    # Raise during the interceptor's placeholder generation.
+    original_method = PlaceholderManager.get_placeholder
+
+    def raise_after_generation(self, entity_type, original_value):
+        original_method(self, entity_type, original_value)
+        raise RuntimeError("Simulated placeholder failure")
+
+    monkeypatch.setattr(
+        PlaceholderManager,
+        "get_placeholder",
+        raise_after_generation,
+    )
+
+    with pytest.raises(RuntimeError):
+        interceptor.redact(
+            "Contact jane@example.com",
+            session,
+        )
+
+    # The original session state must remain intact.
+    assert interceptor._vault.get_mapping(session) == {
+        "<EMAIL_1>": "john@example.com"
+    }
+
+    assert interceptor.unmask(
+        "Contact <EMAIL_1>",
+        session,
+    ) == "Contact john@example.com"
+
+    assert interceptor._session_managers[session].value_mapping == {
+        ("EMAIL_ADDRESS", "john@example.com"): "<EMAIL_1>"
+    }

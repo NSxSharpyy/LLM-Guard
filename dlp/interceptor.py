@@ -36,10 +36,19 @@ class DLPInterceptor:
             if not entities_found:
                 return text, []
 
-            if session_id not in self._session_managers:
-                self._session_managers[session_id] = PlaceholderManager()
+            # Work on a temporary manager so failures cannot
+            # corrupt an existing session or leave a partial one.
+            manager = PlaceholderManager()
 
-            manager = self._session_managers[session_id]
+            existing_manager = self._session_managers.get(session_id)
+
+            if existing_manager is not None:
+                manager.value_mapping = dict(
+                    existing_manager.value_mapping
+                )
+                manager.entity_counters = dict(
+                    existing_manager.entity_counters
+                )
 
             mapping = {}
             replacements = []
@@ -74,10 +83,11 @@ class DLPInterceptor:
                     + masked_text[end:]
                 )
 
+            # Store mappings before committing the new manager.
             self._vault.store(session_id, mapping)
+            self._session_managers[session_id] = manager
 
             return masked_text, entities_found
-
 
     def unmask(self, text: str, session_id: str) -> str:
         """Restore original values using the session vault."""
