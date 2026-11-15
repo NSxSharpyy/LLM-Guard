@@ -1,4 +1,13 @@
-"""Initial LLM-Guard SOC dashboard shell."""
+"""LLM-Guard SOC dashboard with live JSONL telemetry."""
+
+
+# Make the repository root available for project package imports.
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import shutil
 import subprocess
@@ -7,6 +16,9 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 import streamlit as st
+
+from dashboard.event_reader import JsonlEventTailReader
+from telemetry.telemetry_logger import DEFAULT_LOG_PATH
 
 
 PROXY_HEALTH_URL = "http://127.0.0.1:8000/health"
@@ -72,7 +84,6 @@ def check_container(container_name):
 
     if container_state != "running":
         return "Offline", f"Container state: {container_state}"
-
     if health_state == "healthy":
         return "Healthy", "Docker healthcheck passed."
     if health_state == "unhealthy":
@@ -93,8 +104,6 @@ def render_service(column, name, state, detail):
         st.caption(detail)
 
 
-# ---------------------- PAGE CONFIGURATION ----------------------
-
 st.set_page_config(
     page_title="LLM-Guard | SOC Dashboard",
     page_icon="🛡️",
@@ -108,56 +117,79 @@ st.caption("AI Security Posture Management | Security Operations Center")
 st.sidebar.title("LLM-Guard")
 st.sidebar.caption("Security Operations Dashboard")
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Current module:** Overview")
+st.sidebar.markdown("**Current module:** Live Security Overview")
 st.sidebar.info(
-    "Initial dashboard shell. Live telemetry integration is scheduled "
-    "for Day 7."
+    "Live telemetry is read from the local JSONL security event stream. "
+    "The dashboard refreshes this panel every two seconds."
 )
-
-st.markdown(
-    """
-    <div style="
-        padding: 12px 16px;
-        border-radius: 8px;
-        background-color: rgba(128,128,128,0.12);
-        border-left: 4px solid #D69E36;
-        margin-bottom: 18px;">
-        <strong>Dashboard shell:</strong>
-        Telemetry counters are not connected yet.
-        Service health indicators below use live checks.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---------------------- KPI SECTION ----------------------
 
 st.header("Security Overview")
 
-total_col, blocked_col = st.columns(2)
 
-with total_col:
-    st.metric(
-        label="Total Requests",
-        value="—",
-        help="Live request counts will be connected during Day 7.",
+# Keep one reader per Streamlit browser session so file offsets and
+# cumulative counters survive periodic fragment reruns.
+if "event_reader" not in st.session_state:
+    st.session_state.event_reader = JsonlEventTailReader(
+        path=DEFAULT_LOG_PATH,
+        max_recent=100,
     )
 
-with blocked_col:
-    st.metric(
-        label="Blocked Requests",
-        value="—",
-        help="Live block counts will be connected during Day 7.",
-    )
 
-st.caption(
-    "Request KPIs are intentionally unavailable until a telemetry source "
-    "is connected. A dash is not a zero count."
-)
+@st.fragment(run_every="2s")
+def render_live_telemetry():
+    """Poll the log and refresh telemetry metrics and the event table."""
+    snapshot = st.session_state.event_reader.poll()
+
+    total_col, allowed_col, blocked_col, malformed_col = st.columns(4)
+
+    if snapshot.available:
+        total_value = snapshot.total
+        allowed_value = snapshot.allowed
+        blocked_value = snapshot.blocked
+        malformed_value = snapshot.malformed
+    else:
+        total_value = "—"
+        allowed_value = "—"
+        blocked_value = "—"
+        malformed_value = "—"
+
+    total_col.metric("Total Events", total_value)
+    allowed_col.metric("Allowed Events", allowed_value)
+    blocked_col.metric("Blocked Events", blocked_value)
+    malformed_col.metric("Malformed Records", malformed_value)
+
+    st.caption(snapshot.message)
+    st.caption(f"Telemetry source: `{DEFAULT_LOG_PATH}`")
+
+    if not snapshot.available:
+        st.info(
+            "The security event log is not available yet. "
+            "Start the telemetry producer to create it."
+        )
+    elif not snapshot.recent_events:
+        st.info("No valid security events have been recorded yet.")
+    else:
+        st.subheader("Recent Security Events")
+
+        # Newest events appear first in the dashboard.
+        recent = list(reversed(snapshot.recent_events))
+
+        st.dataframe(
+            recent,
+            hide_index=True,
+            width="stretch",
+        )
+
+    if snapshot.malformed:
+        st.warning(
+            f"{snapshot.malformed} malformed or schema-invalid "
+            "records were skipped."
+        )
+
+
+render_live_telemetry()
 
 st.divider()
-
-# ---------------------- SYSTEM HEALTH SECTION ----------------------
 
 st.header("System Health")
 
