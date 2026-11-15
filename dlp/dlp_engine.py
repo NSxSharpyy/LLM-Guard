@@ -19,6 +19,7 @@ from dlp.placeholder_manager import PlaceholderManager
 STANDARD_ENTITIES = [
     "EMAIL_ADDRESS",
     "PHONE_NUMBER",
+    "CREDIT_CARD",
 ]
 
 # Day 2 + Day 3 supported entities

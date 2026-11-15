@@ -115,3 +115,8 @@ class DLPInterceptor:
         """Return the number of active vault sessions."""
 
         return self._vault.session_count()
+
+    def has_session(self, session_id: str) -> bool:
+        """Check whether a session exists in the vault."""
+
+        return self._vault.has_session(session_id)

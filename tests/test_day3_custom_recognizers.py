@@ -219,7 +219,7 @@ def test_rejects_plain_text_with_dots(engine):
 # REGISTRY AND INTEGRATION
 # ============================================================
 
-def test_all_seven_entities_are_supported(engine):
+def test_all_supported_entities_are_registered(engine):
     expected = {
         "EMAIL_ADDRESS",
         "PHONE_NUMBER",
@@ -228,6 +228,7 @@ def test_all_seven_entities_are_supported(engine):
         "AWS_ACCESS_KEY",
         "AWS_SECRET_KEY",
         "JWT_TOKEN",
+        "CREDIT_CARD",
     }
 
     assert set(SUPPORTED_ENTITIES) == expected

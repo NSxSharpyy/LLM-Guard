@@ -59,6 +59,10 @@ class Vault:
         with self._lock:
             return len(self._store)
 
+    def has_session(self, session_id: str) -> bool:
+        """Check whether a session currently exists in the vault."""
+        with self._lock:
+            return session_id in self._store
 
 def build_mapping_from_entities(entities_found: list) -> dict:
     """Convert Day 4 entities into a vault mapping."""

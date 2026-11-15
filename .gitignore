@@ -25,3 +25,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Day 7 local integration logs
+logs/
