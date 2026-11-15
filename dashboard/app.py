@@ -21,7 +21,8 @@ from dashboard.event_reader import JsonlEventTailReader
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
 
 
-PROXY_HEALTH_URL = "http://127.0.0.1:8000/health"
+PROXY_HEALTH_URL = "http://127.0.0.1:8000/healthz"
+MOCK_LLM_HEALTH_URL = "http://127.0.0.1:8001/healthz"
 
 STATUS_ICONS = {
     "Healthy": "🟢",
@@ -39,6 +40,18 @@ def check_proxy():
         with urlopen(PROXY_HEALTH_URL, timeout=2) as response:
             if response.status == 200:
                 return "Healthy", "HTTP 200 from proxy health endpoint"
+            return "Unhealthy", f"Unexpected HTTP status: {response.status}"
+    except (URLError, TimeoutError, OSError) as exc:
+        return "Offline", str(exc)[:180]
+
+
+
+def check_mock_llm():
+    """Check the locally running mock LLM HTTP health endpoint."""
+    try:
+        with urlopen(MOCK_LLM_HEALTH_URL, timeout=2) as response:
+            if response.status == 200:
+                return "Healthy", "HTTP 200 from mock LLM health endpoint"
             return "Unhealthy", f"Unexpected HTTP status: {response.status}"
     except (URLError, TimeoutError, OSError) as exc:
         return "Offline", str(exc)[:180]
@@ -195,7 +208,7 @@ st.header("System Health")
 
 proxy_state, proxy_detail = check_proxy()
 redis_state, redis_detail = check_container("llm-guard-redis")
-mock_state, mock_detail = check_container("llm-guard-mock-llm")
+mock_state, mock_detail = check_mock_llm()
 
 health_col1, health_col2, health_col3 = st.columns(3)
 
