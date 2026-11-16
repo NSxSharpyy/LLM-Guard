@@ -4,6 +4,7 @@ from typing import Optional
 
 from rule_engine import StaticRuleMatcher
 from action_evaluator import evaluate_rule_actions
+from payload_decoder import generate_payload_variants
 
 
 @dataclass(frozen=True)
@@ -22,11 +23,27 @@ class RuleEngine:
         self.matcher = StaticRuleMatcher(rules)
 
     def evaluate(self, prompt_text: str) -> RuleResult:
-        """Evaluate prompt against static rules and return RuleResult."""
+        """Evaluate original and decoded prompt variants against static rules."""
 
-        matched_rules = self.matcher.match(prompt_text)
+        if not isinstance(prompt_text, str):
+            raise TypeError("prompt_text must be a string")
 
-        action_result = evaluate_rule_actions(matched_rules)
+        variants = generate_payload_variants(prompt_text)
+
+        all_matched_rules = []
+        seen_rule_ids = set()
+
+        for variant in variants:
+            matched_rules = self.matcher.match(variant)
+
+            for rule in matched_rules:
+                rule_id = rule["rule_id"]
+
+                if rule_id not in seen_rule_ids:
+                    all_matched_rules.append(rule)
+                    seen_rule_ids.add(rule_id)
+
+        action_result = evaluate_rule_actions(all_matched_rules)
 
         return RuleResult(
             is_blocked=action_result["is_blocked"],
