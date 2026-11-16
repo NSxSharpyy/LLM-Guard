@@ -43,6 +43,7 @@ class RuleEngine:
                     all_matched_rules.append(rule)
                     seen_rule_ids.add(rule_id)
 
+        # IMPORTANT: These lines must be OUTSIDE the for loop
         action_result = evaluate_rule_actions(all_matched_rules)
 
         return RuleResult(
