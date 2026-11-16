@@ -15,9 +15,12 @@ from datetime import datetime
 from urllib.error import URLError
 from urllib.request import urlopen
 
+import altair as alt
 import streamlit as st
 
 from dashboard.event_reader import JsonlEventTailReader
+from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
+from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
 
 
@@ -117,6 +120,129 @@ def render_service(column, name, state, detail):
         st.caption(detail)
 
 
+def render_analytics(snapshot):
+    """Render cumulative security analytics from the complete reader snapshot."""
+    st.subheader("Visual Security Analytics")
+
+    action_rows = action_distribution(
+        snapshot.allowed,
+        snapshot.blocked,
+    )
+    rule_rows = top_rule_counts(snapshot.rule_counts, limit=10)
+    hourly_rows = hourly_volume(snapshot.hourly_counts)
+
+    distribution_col, rules_col = st.columns(2)
+
+    with distribution_col:
+        st.markdown("#### Allowed vs Blocked Traffic")
+
+        if snapshot.total:
+            pie_chart = (
+                alt.Chart(alt.Data(values=action_rows))
+                .mark_arc(innerRadius=55, outerRadius=110)
+                .encode(
+                    theta=alt.Theta(
+                        field="events",
+                        type="quantitative",
+                        title="Events",
+                    ),
+                    color=alt.Color(
+                        field="action",
+                        type="nominal",
+                        title="Action",
+                        scale=alt.Scale(
+                            domain=["ALLOW", "BLOCK"],
+                            range=["#22c55e", "#ef4444"],
+                        ),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("action:N", title="Action"),
+                        alt.Tooltip("events:Q", title="Events"),
+                    ],
+                )
+                .properties(
+                    title="Allowed vs Blocked Traffic",
+                    height=280,
+                )
+            )
+            st.altair_chart(pie_chart, width="stretch")
+        else:
+            st.info("No traffic data is available yet.")
+
+    with rules_col:
+        st.markdown("#### Top 10 Triggered Firewall Rules")
+
+        if rule_rows:
+            rule_chart = (
+                alt.Chart(alt.Data(values=rule_rows))
+                .mark_bar(color="#60a5fa")
+                .encode(
+                    x=alt.X(
+                        "events:Q",
+                        title="Number of events",
+                    ),
+                    y=alt.Y(
+                        "rule_id:N",
+                        title="Firewall rule",
+                        axis=alt.Axis(labelLimit=320, labelOverlap=False),
+                        sort=alt.SortField(
+                            field="events",
+                            order="descending",
+                        ),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("rule_id:N", title="Rule ID"),
+                        alt.Tooltip("events:Q", title="Events"),
+                    ],
+                )
+                .properties(
+                    title="Most Frequently Triggered Rules",
+                    height=max(280, 34 * len(rule_rows)),
+                )
+            )
+            st.altair_chart(rule_chart, width="stretch")
+        else:
+            st.info("No firewall-rule data is available yet.")
+
+    st.markdown("#### Hourly Request Volume (UTC)")
+
+    if hourly_rows:
+        hourly_chart = (
+            alt.Chart(alt.Data(values=hourly_rows))
+            .mark_line(
+                point=True,
+                color="#38bdf8",
+            )
+            .encode(
+                x=alt.X(
+                    "hour:T",
+                    title="Hour (UTC)",
+                    scale=alt.Scale(type="utc"),
+                    axis=alt.Axis(format="%b %d %H:%M", labelAngle=-35),
+                ),
+                y=alt.Y(
+                    "events:Q",
+                    title="Number of requests",
+                ),
+                tooltip=[
+                    alt.Tooltip(
+                        "hour:T",
+                        title="Hour (UTC)",
+                        format="%Y-%m-%d %H:%M",
+                    ),
+                    alt.Tooltip("events:Q", title="Requests"),
+                ],
+            )
+            .properties(
+                title="Request Volume by Hour",
+                height=300,
+            )
+        )
+        st.altair_chart(hourly_chart, width="stretch")
+    else:
+        st.info("No hourly request data is available yet.")
+
+
 st.set_page_config(
     page_title="LLM-Guard | SOC Dashboard",
     page_icon="🛡️",
@@ -174,6 +300,9 @@ def render_live_telemetry():
     st.caption(snapshot.message)
     st.caption(f"Telemetry source: `{DEFAULT_LOG_PATH}`")
 
+    if snapshot.available and snapshot.total:
+        render_analytics(snapshot)
+
     if not snapshot.available:
         st.info(
             "The security event log is not available yet. "
@@ -182,15 +311,120 @@ def render_live_telemetry():
     elif not snapshot.recent_events:
         st.info("No valid security events have been recorded yet.")
     else:
-        st.subheader("Recent Security Events")
+        st.subheader("Security Event Table")
 
-        # Newest events appear first in the dashboard.
-        recent = list(reversed(snapshot.recent_events))
+        # Sorting and page-size controls.
+        sort_col, order_col, size_col = st.columns([2, 1, 1])
+
+        with sort_col:
+            sort_label = st.selectbox(
+                "Sort by",
+                options=list(SORTABLE_FIELDS.keys()),
+                key="event_table_sort_by",
+            )
+
+        with order_col:
+            sort_order = st.selectbox(
+                "Order",
+                options=["Descending", "Ascending"],
+                key="event_table_sort_order",
+            )
+
+        with size_col:
+            page_size = st.selectbox(
+                "Rows per page",
+                options=[10, 25, 50],
+                key="event_table_page_size",
+            )
+
+        sort_field = SORTABLE_FIELDS[sort_label]
+        descending = sort_order == "Descending"
+
+        # Reset pagination whenever sorting or page size changes.
+        sort_signature = (sort_field, descending, page_size)
+
+        if st.session_state.get("event_table_sort_signature") != sort_signature:
+            st.session_state["event_table_sort_signature"] = sort_signature
+            st.session_state["event_table_page"] = 1
+
+        sorted_events = sort_events(
+            snapshot.recent_events,
+            sort_by=sort_field,
+            descending=descending,
+        )
+
+        total_items = len(sorted_events)
+        total_pages = max(
+            1,
+            (total_items + page_size - 1) // page_size,
+        )
+
+        current_page = int(
+            st.session_state.get("event_table_page", 1)
+        )
+        current_page = min(max(current_page, 1), total_pages)
+
+        # Pagination controls.
+        previous_col, page_col, next_col = st.columns([1, 1, 1])
+
+        if previous_col.button(
+            "← Previous",
+            disabled=current_page <= 1,
+            key="event_table_previous",
+        ):
+            current_page -= 1
+
+        if next_col.button(
+            "Next →",
+            disabled=current_page >= total_pages,
+            key="event_table_next",
+        ):
+            current_page += 1
+
+        st.session_state["event_table_page"] = current_page
+        page_col.markdown(
+            f"**Page {current_page} of {total_pages}**"
+        )
+
+        page_events, current_page, total_pages = paginate_events(
+            sorted_events,
+            page=current_page,
+            page_size=page_size,
+        )
+
+        st.session_state["event_table_page"] = current_page
+
+        start_item = (current_page - 1) * page_size + 1
+        end_item = min(current_page * page_size, total_items)
+
+        st.caption(
+            f"Showing {start_item}–{end_item} of {total_items} "
+            f"events in the current recent-event window."
+        )
+
+        # Presentation-only rows. Original SIEM events remain unchanged.
+        display_rows = []
+
+        for event in page_events:
+            display_rows.append(
+                {
+                    "Timestamp": event["timestamp"],
+                    "Trace ID": event["trace_id"],
+                    "Client IP": event["client_ip"],
+                    "User": event["user_id"],
+                    "Role": event["user_role"],
+                    "Status": status_badge(event["action"]),
+                    "Rule ID": event["rule_id"],
+                    "ML Score": event["ml_score"],
+                    "Latency (ms)": event["latency_ms"],
+                }
+            )
 
         st.dataframe(
-            recent,
+            display_rows,
             hide_index=True,
             width="stretch",
+            height=480,
         )
 
     if snapshot.malformed:

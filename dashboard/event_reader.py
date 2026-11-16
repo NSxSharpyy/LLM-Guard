@@ -2,6 +2,7 @@
 
 import json
 from collections import deque
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ class EventSnapshot:
     blocked: int
     malformed: int
     recent_events: list[dict[str, Any]]
+    rule_counts: dict[str, int]
+    hourly_counts: dict[str, int]
     message: str
 
 
@@ -57,6 +60,9 @@ class JsonlEventTailReader:
             maxlen=max_recent
         )
 
+        self.rule_counts: dict[str, int] = {}
+        self.hourly_counts: dict[str, int] = {}
+
         self.message = "Waiting for security events."
 
     def _reset_for_new_file(
@@ -73,6 +79,8 @@ class JsonlEventTailReader:
         self.blocked = 0
         self.malformed = 0
         self.recent_events.clear()
+        self.rule_counts.clear()
+        self.hourly_counts.clear()
 
         self.message = "Security log file opened or replaced."
 
@@ -94,12 +102,33 @@ class JsonlEventTailReader:
             self.malformed += 1
             return
 
+        # Normalize event timestamps to UTC before hourly aggregation.
+        try:
+            event_time = datetime.fromisoformat(
+                event["timestamp"].replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            self.malformed += 1
+            return
+
         self.total += 1
 
         if event["action"] == "ALLOW":
             self.allowed += 1
         elif event["action"] == "BLOCK":
             self.blocked += 1
+
+        rule_id = event["rule_id"]
+        self.rule_counts[rule_id] = (
+            self.rule_counts.get(rule_id, 0) + 1
+        )
+
+        hour_bucket = event_time.replace(
+            minute=0, second=0, microsecond=0
+        ).strftime("%Y-%m-%dT%H:00Z")
+        self.hourly_counts[hour_bucket] = (
+            self.hourly_counts.get(hour_bucket, 0) + 1
+        )
 
         self.recent_events.append(event)
 
@@ -165,5 +194,7 @@ class JsonlEventTailReader:
             blocked=self.blocked,
             malformed=self.malformed,
             recent_events=list(self.recent_events),
+            rule_counts=dict(self.rule_counts),
+            hourly_counts=dict(self.hourly_counts),
             message=message or self.message,
         )

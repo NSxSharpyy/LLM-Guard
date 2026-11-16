@@ -187,3 +187,93 @@ def test_reader_resets_after_log_file_replacement(tmp_path):
     assert result.allowed == 0
     assert result.blocked == 1
     assert result.recent_events[0]["trace_id"] == "reader-test-2"
+
+
+def test_reader_aggregates_events_by_rule_and_hour(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+
+    append_event(path, make_event(1, "ALLOW"))
+    append_event(path, make_event(2, "BLOCK"))
+    append_event(path, make_event(3, "BLOCK"))
+
+    result = JsonlEventTailReader(path).poll()
+
+    assert result.rule_counts == {
+        "POLICY_ALLOW_001": 1,
+        "PROMPT_INJECTION_001": 2,
+    }
+    assert result.hourly_counts == {
+        "2026-11-15T10:00Z": 3,
+    }
+
+
+def test_reader_normalizes_timezone_for_hourly_aggregation(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+
+    utc_event = make_event(1)
+    offset_event = make_event(2, "BLOCK")
+    offset_event["timestamp"] = "2026-11-15T15:30:00+05:30"
+
+    append_event(path, utc_event)
+    append_event(path, offset_event)
+
+    result = JsonlEventTailReader(path).poll()
+
+    assert result.hourly_counts == {
+        "2026-11-15T10:00Z": 2,
+    }
+
+
+def test_reader_updates_aggregations_for_appended_events(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+    reader = JsonlEventTailReader(path)
+
+    append_event(path, make_event(1, "ALLOW"))
+    first = reader.poll()
+
+    assert first.rule_counts["POLICY_ALLOW_001"] == 1
+
+    append_event(path, make_event(2, "BLOCK"))
+    second = reader.poll()
+
+    assert second.rule_counts == {
+        "POLICY_ALLOW_001": 1,
+        "PROMPT_INJECTION_001": 1,
+    }
+    assert second.hourly_counts["2026-11-15T10:00Z"] == 2
+
+
+def test_reader_resets_aggregations_after_truncation(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+
+    append_event(path, make_event(1, "ALLOW"))
+    append_event(path, make_event(2, "BLOCK"))
+
+    reader = JsonlEventTailReader(path)
+    assert reader.poll().total == 2
+
+    path.write_text(
+        json.dumps(make_event(3, "BLOCK")) + "\n",
+        encoding="utf-8",
+    )
+
+    result = reader.poll()
+
+    assert result.rule_counts == {
+        "PROMPT_INJECTION_001": 1,
+    }
+    assert result.hourly_counts == {
+        "2026-11-15T10:00Z": 1,
+    }
+
+
+def test_reader_does_not_aggregate_malformed_records(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+    path.write_bytes(b'not-json\n')
+
+    result = JsonlEventTailReader(path).poll()
+
+    assert result.total == 0
+    assert result.malformed == 1
+    assert result.rule_counts == {}
+    assert result.hourly_counts == {}
