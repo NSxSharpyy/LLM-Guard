@@ -6,7 +6,7 @@ Day 4: Deterministic semantic placeholder masking.
 """
 
 from presidio_analyzer import AnalyzerEngine
-
+from dlp.pre_filter import might_contain_pii
 from dlp.custom_recognizers import (
     CUSTOM_ENTITY_TYPES,
     register_custom_recognizers,
@@ -81,12 +81,16 @@ class DLPEngine:
         if not text:
             return text, []
 
-        # STEP 1: Detect sensitive entities.
-        results = self.analyzer.analyze(
-            text=text,
-            language="en",
-            entities=SUPPORTED_ENTITIES,
-        )
+        # STEP 1: Lightweight pre-filter.
+        # Skip expensive Presidio analysis when no indicators are found.
+        if might_contain_pii(text):
+            results = self.analyzer.analyze(
+                text=text,
+                language="en",
+                entities=SUPPORTED_ENTITIES,
+            )
+        else:
+            results = []
 
         # STEP 2: Resolve overlapping detections.
         results = self._resolve_overlaps(results)
