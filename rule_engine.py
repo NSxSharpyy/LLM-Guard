@@ -16,8 +16,9 @@ class StaticRuleMatcher:
 
             if rule["match_type"] == "regex":
                 compiled_rule["_compiled_pattern"] = re.compile(
-                    rule["pattern"]
-                )
+                rule["pattern"],
+                re.IGNORECASE
+            )
 
             self.rules.append(compiled_rule)
 
