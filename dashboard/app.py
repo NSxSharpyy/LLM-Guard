@@ -27,7 +27,7 @@ from telemetry.telemetry_logger import DEFAULT_LOG_PATH
 
 
 PROXY_HEALTH_URL = "http://127.0.0.1:8000/healthz"
-MOCK_LLM_HEALTH_URL = "http://127.0.0.1:8001/healthz"
+MOCK_LLM_HEALTH_URL = "http://127.0.0.1:8101/healthz"
 
 STATUS_ICONS = {
     "Healthy": "🟢",
