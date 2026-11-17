@@ -1,4 +1,4 @@
-import re
+﻿import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +30,18 @@ def normalize_prompt_text(text: str) -> str:
 
 # Compiled high-precision adversarial signatures: (rule_id, risk_score, reason, regex)
 _INJECTION_RULES: list[tuple[str, float, str, re.Pattern[str]]] = [
+         (
+        "PI-004-DELIMITER-INJECTION",
+        0.88,
+        "Detected chat-template control token or role-delimiter smuggling",
+        re.compile(
+            r"(<\|im_start\|>\s*system|<\|im_end\|>|\[INST\]|\[/INST\]|"
+            r"<\|system\|>|<<SYS>>|<</SYS>>|"
+            r"###\s*System\s*(?:Prompt)?\s*:)",
+            re.IGNORECASE,
+        ),
+    ),
+
     (
         "PI-001-INSTRUCTION-OVERRIDE",
         0.95,
@@ -54,15 +66,6 @@ _INJECTION_RULES: list[tuple[str, float, str, re.Pattern[str]]] = [
         "Detected attempt to exfiltrate system prompt or hidden instructions",
         re.compile(
             r"\b(reveal|repeat|print|output|show|display|dump)\b.{0,35}\b(your\s+)?(system\s+prompt|initial\s+instructions|hidden\s+prompt|developer\s+message|secret\s+instructions)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "PI-004-DELIMITER-INJECTION",
-        0.88,
-        "Detected chat-template control token or role-delimiter smuggling",
-        re.compile(
-            r"(<\|im_start\|>system|<\|im_end\|>|\[INST\]|\[/INST\]|<\|system\|>|###\s*System\s*Prompt\s*:)",
             re.IGNORECASE,
         ),
     ),
