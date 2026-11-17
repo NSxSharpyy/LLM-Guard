@@ -1,4 +1,6 @@
+from src.security.ip_validator import IPAccessController
 import logging
+import ipaddress
 from pathlib import Path
 import yaml
 
@@ -16,6 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
 from src.security.auth import TenantContext, authenticate_request
+from src.security.ip_validator import IPAccessController
 from src.security.prompt_guard import inspect_chat_payload
 from src.security.rate_limiter import SlidingWindowRateLimiter
 from src.security.siem_logger import SIEMEventLogger, generate_trace_id
@@ -24,7 +27,10 @@ UPSTREAM_BASE_URL = os.getenv("UPSTREAM_BASE_URL", "http://127.0.0.1:8001")
 logger = logging.getLogger(__name__)
 
 RULES_PATH = Path(__file__).resolve().parents[2] / "rules.yaml"
-
+def _get_ip_list(env_name: str) -> list[str]:
+    """Read comma-separated IP/CIDR values from an environment variable."""
+    value = os.getenv(env_name, "")
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 def load_security_rules() -> list[dict]:
     """Load firewall rules from the root rules.yaml file."""
@@ -71,7 +77,10 @@ class ProxyState:
     client: httpx.AsyncClient | None = None
     rate_limiter: SlidingWindowRateLimiter = SlidingWindowRateLimiter(window_seconds=60.0)
     siem_logger: SIEMEventLogger = SIEMEventLogger()
-
+    ip_controller: IPAccessController = IPAccessController(
+    allowed_networks=_get_ip_list("LLM_GUARD_ALLOWED_CIDRS"),
+    blocked_ips=_get_ip_list("LLM_GUARD_BLOCKED_IPS"),
+    )
     rules: list[dict] = load_security_rules()
     rule_engine: RuleEngine = RuleEngine(rules)
     token_limiter: TokenLimiter = TokenLimiter(
@@ -82,12 +91,64 @@ state = ProxyState()
 
 
 def _extract_client_ip(request: Request) -> str:
+    """Extract client IP without trusting arbitrary forwarded headers."""
+
+    if not request.client or not request.client.host:
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to determine client IP address",
+        )
+
+    try:
+        peer_ip = ipaddress.ip_address(request.client.host)
+    except ValueError:
+        raise HTTPException(
+        status_code=400,
+        detail="Invalid immediate peer IP address",
+    )
+
+    trusted_proxies = [
+        ipaddress.ip_network(cidr, strict=False)
+        for cidr in _get_ip_list("LLM_GUARD_TRUSTED_PROXY_CIDRS")
+    ]
+
+    is_trusted_proxy = any(
+        peer_ip.version == network.version and peer_ip in network
+        for network in trusted_proxies
+    )
+
+    if not is_trusted_proxy:
+        return str(peer_ip)
+
     forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "127.0.0.1"
+
+    if not forwarded:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing X-Forwarded-For header from trusted proxy",
+        )
+
+    try:
+        forwarded_ips = [
+            ipaddress.ip_address(value.strip())
+            for value in forwarded.split(",")
+        ]
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid X-Forwarded-For header",
+        )
+
+    # Walk from the nearest proxy towards the original client.
+    for address in reversed(forwarded_ips):
+        is_trusted_hop = any(
+            address.version == network.version and address in network
+            for network in trusted_proxies
+        )
+        if not is_trusted_hop:
+            return str(address)
+
+    return str(forwarded_ips[0])
 
 
 @asynccontextmanager
@@ -151,7 +212,39 @@ async def proxy_chat_completions(request: Request) -> Response:
     t_req_start = time.perf_counter()
     trace_id = generate_trace_id()
     client_ip = _extract_client_ip(request)
-    tenant: TenantContext | None = None
+
+# Stage 0: Enforce IP allowlist and blacklist
+        # Stage 0: Enforce IP allowlist and blacklist
+    ip_result = state.ip_controller.validate_ip(client_ip)
+
+    if not ip_result.allowed:
+        latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+
+        rule_id = {
+            "BLACKLISTED_IP": "IP-403-BLACKLISTED",
+            "IP_NOT_IN_ALLOWED_CIDR": "IP-403-CIDR-DENIED",
+            "INVALID_IP_ADDRESS": "IP-403-INVALID",
+        }.get(ip_result.reason, "IP-403-DENIED")
+
+        await state.siem_logger.log_event(
+            trace_id=trace_id,
+            client_ip=client_ip,
+            user_id="anonymous",
+            user_role="unauthenticated",
+            action="BLOCK",
+            rule_id=rule_id,
+            ml_score=0.0,
+            latency_ms=latency_ms,
+        )
+
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Client IP address is not allowed"},
+            headers={
+                "X-Trace-Id": trace_id,
+                "X-Guard-Rule-Id": rule_id,
+            },
+        )
 
     # Stage 1: Authenticate API Key & Resolve User/Role Context
     try:
