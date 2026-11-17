@@ -1,4 +1,4 @@
-from src.security.ip_validator import IPAccessController
+from src.security.error_response import build_security_error
 import logging
 import ipaddress
 from pathlib import Path
@@ -213,8 +213,8 @@ async def proxy_chat_completions(request: Request) -> Response:
     trace_id = generate_trace_id()
     client_ip = _extract_client_ip(request)
 
-# Stage 0: Enforce IP allowlist and blacklist
-        # Stage 0: Enforce IP allowlist and blacklist
+
+    # Stage 0: Enforce IP allowlist and blacklist
     ip_result = state.ip_controller.validate_ip(client_ip)
 
     if not ip_result.allowed:
@@ -237,14 +237,19 @@ async def proxy_chat_completions(request: Request) -> Response:
             latency_ms=latency_ms,
         )
 
-        return JSONResponse(
+        return build_security_error(
             status_code=403,
-            content={"detail": "Client IP address is not allowed"},
+            code="IP_ACCESS_DENIED",
+            rule_id=rule_id,
+            message="Client IP address is not allowed",
+            trace_id=trace_id,
             headers={
                 "X-Trace-Id": trace_id,
                 "X-Guard-Rule-Id": rule_id,
             },
         )
+
+    # Stage 1: Authenticate API Key & Resolve User/Role Context
 
     # Stage 1: Authenticate API Key & Resolve User/Role Context
     try:
@@ -268,19 +273,22 @@ async def proxy_chat_completions(request: Request) -> Response:
             ml_score=0.0,
             latency_ms=latency_ms,
         )
-        return JSONResponse(
+        return build_security_error(
             status_code=auth_exc.status_code,
-            content={"detail": auth_exc.detail},
+            code="AUTHENTICATION_FAILED",
+            rule_id=rule_id,
+            message=str(auth_exc.detail),
+            trace_id=trace_id,
             headers=exc_headers,
         )
 
     # Stage 2: Enforce Sliding-Window Per-Tenant Rate Limit
     try:
-            rl_info = await state.rate_limiter.check_limit(
-        api_key=tenant.api_key_id or tenant.tenant_id,
-        max_reqs=tenant.rpm_limit,
-        window_secs=60,
-    )
+        rl_info = await state.rate_limiter.check_limit(
+            api_key=tenant.api_key_id or tenant.tenant_id,
+            max_reqs=tenant.rpm_limit,
+            window_secs=60,
+        )
     except HTTPException as rl_exc:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
         exc_headers = dict(rl_exc.headers or {})
@@ -297,9 +305,12 @@ async def proxy_chat_completions(request: Request) -> Response:
             ml_score=0.0,
             latency_ms=latency_ms,
         )
-        return JSONResponse(
+        return build_security_error(
             status_code=rl_exc.status_code,
-            content={"detail": rl_exc.detail},
+            code="RATE_LIMIT_EXCEEDED",
+            rule_id="RL-429-RPM-EXCEEDED",
+            message=str(rl_exc.detail),
+            trace_id=trace_id,
             headers=exc_headers,
         )
 
@@ -330,9 +341,12 @@ async def proxy_chat_completions(request: Request) -> Response:
             ml_score=0.0,
             latency_ms=latency_ms,
         )
-        return JSONResponse(
+        return build_security_error(
             status_code=400,
-            content={"detail": "Malformed JSON payload"},
+            code="INVALID_REQUEST_FORMAT",
+            rule_id="REQ-400-MALFORMED-JSON",
+            message="Malformed JSON payload",
+            trace_id=trace_id,
             headers={"X-Trace-Id": trace_id},
         )
 
@@ -350,19 +364,19 @@ async def proxy_chat_completions(request: Request) -> Response:
             ml_score=guard_verdict.risk_score,
             latency_ms=latency_ms,
         )
-        return JSONResponse(
+        return build_security_error(
             status_code=400,
-            content={
-                "detail": f"Blocked by LLM-Guard Security Policy ({guard_verdict.rule_id}): {guard_verdict.reason}",
-                "rule_id": guard_verdict.rule_id,
-                "trace_id": trace_id,
-            },
+            code="PROMPT_SECURITY_VIOLATION",
+            rule_id=guard_verdict.rule_id,
+            message="Prompt violated corporate AI security policy",
+            trace_id=trace_id,
             headers={
                 "X-Trace-Id": trace_id,
                 "X-Tenant-Id": tenant.tenant_id,
                 "X-Guard-Rule-Id": guard_verdict.rule_id,
             },
-        )
+            )
+        
 
         # Stage 4: Member 4 - Token Limit Enforcement
     prompt_text = extract_prompt_text(parsed_body)
@@ -383,13 +397,12 @@ async def proxy_chat_completions(request: Request) -> Response:
             latency_ms=latency_ms,
         )
 
-        return JSONResponse(
+        return build_security_error(
             status_code=413,
-            content={
-                "detail": "Prompt exceeds maximum token limit",
-                "token_count": token_result["token_count"],
-                "max_tokens": token_result["max_tokens"],
-            },
+            code="PROMPT_TOKEN_LIMIT_EXCEEDED",
+            rule_id="TOK-413-LIMIT-EXCEEDED",
+            message="Prompt exceeds maximum token limit",
+            trace_id=trace_id,
             headers={
                 "X-Trace-Id": trace_id,
                 "X-Tenant-Id": tenant.tenant_id,
@@ -413,18 +426,16 @@ async def proxy_chat_completions(request: Request) -> Response:
             latency_ms=latency_ms,
         )
 
-        return JSONResponse(
+        return build_security_error(
             status_code=403,
-            content={
-                "detail": "Blocked by Member 4 Rule Engine",
-                "rule_id": rule_result.triggered_rule,
-                "severity": rule_result.severity,
-                "trace_id": trace_id,
-            },
+            code="SECURITY_RULE_VIOLATION",
+            rule_id=rule_result.triggered_rule or "RULE-ENGINE-BLOCK",
+            message="Blocked by Member 4 Rule Engine",
+            trace_id=trace_id,
             headers={
                 "X-Trace-Id": trace_id,
                 "X-Tenant-Id": tenant.tenant_id,
-                "X-Guard-Rule-Id": rule_result.triggered_rule or "",
+                "X-Guard-Rule-Id": rule_result.triggered_rule or "RULE-ENGINE-BLOCK",
             },
         )
 
