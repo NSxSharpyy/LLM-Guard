@@ -108,7 +108,7 @@ class AWSSecretKeyRecognizer(PatternRecognizer):
         patterns = [
             Pattern(
                 name="aws_secret_key",
-                regex=r"\b[A-Za-z0-9/+=]{40}\b",
+                regex=r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])",
                 score=0.3,
             )
         ]
