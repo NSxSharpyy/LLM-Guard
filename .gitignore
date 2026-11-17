@@ -8,3 +8,14 @@ venv/
 
 # Test cache
 .pytest_cache/
+# Runtime logs and security event data
+logs/
+*.log
+*.jsonl
+
+# Backup files
+*.bak
+
+# Temporary Day 9 test scripts
+test_day9_redis.py
+test_day9_concurrency.py

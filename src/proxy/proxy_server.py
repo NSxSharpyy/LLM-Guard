@@ -106,10 +106,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         headers={"User-Agent": "LLM-Guard-CoreProxy/1.3"},
     )
     try:
+        await state.rate_limiter.connect()
         yield
     finally:
         if state.client is not None:
             await state.client.aclose()
+
+        await state.rate_limiter.close()
 
 
 app = FastAPI(
@@ -180,10 +183,11 @@ async def proxy_chat_completions(request: Request) -> Response:
 
     # Stage 2: Enforce Sliding-Window Per-Tenant Rate Limit
     try:
-        rl_info = await state.rate_limiter.check_and_record(
-            tenant_id=tenant.tenant_id,
-            rpm_limit=tenant.rpm_limit,
-        )
+            rl_info = await state.rate_limiter.check_limit(
+        api_key=tenant.api_key_id or tenant.tenant_id,
+        max_reqs=tenant.rpm_limit,
+        window_secs=60,
+    )
     except HTTPException as rl_exc:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
         exc_headers = dict(rl_exc.headers or {})

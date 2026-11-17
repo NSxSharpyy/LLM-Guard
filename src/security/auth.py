@@ -11,6 +11,7 @@ class TenantContext:
     user_id: str
     user_role: str
     rpm_limit: int
+    api_key_id: str | None = None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -71,8 +72,13 @@ def authenticate_request(request: Request) -> TenantContext:
 
     for stored_hash, tenant_ctx in DEFAULT_API_KEYS.items():
         if hmac.compare_digest(incoming_hash, stored_hash):
-            return tenant_ctx
-
+            return TenantContext(
+        tenant_id=tenant_ctx.tenant_id,
+        user_id=tenant_ctx.user_id,
+        user_role=tenant_ctx.user_role,
+        rpm_limit=tenant_ctx.rpm_limit,
+        api_key_id=incoming_hash,
+    )
     raise HTTPException(
         status_code=403,
         detail="Forbidden: Invalid or revoked API key",
