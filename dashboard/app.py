@@ -11,7 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -19,6 +20,7 @@ import altair as alt
 import streamlit as st
 
 from dashboard.event_reader import JsonlEventTailReader
+from dashboard.event_filters import filter_events
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
@@ -274,6 +276,109 @@ if "event_reader" not in st.session_state:
     )
 
 
+# Load the current recent window to establish sensible date defaults.
+filter_initial_snapshot = st.session_state.event_reader.poll()
+
+recent_datetimes = [
+    datetime.fromisoformat(
+        event["timestamp"].replace("Z", "+00:00")
+    ).astimezone(ZoneInfo("Asia/Kolkata"))
+    for event in filter_initial_snapshot.recent_events
+]
+
+if recent_datetimes:
+    default_start_date = min(recent_datetimes).date()
+    default_end_date = max(recent_datetimes).date()
+else:
+    default_start_date = datetime.now().astimezone().date()
+    default_end_date = default_start_date
+
+local_timezone = ZoneInfo("Asia/Kolkata")
+
+st.sidebar.divider()
+st.sidebar.subheader("Event Search & Filters")
+st.sidebar.caption(
+    "Filters apply to the latest 100 validated events. "
+    "Global KPIs and charts remain unfiltered."
+)
+
+filter_rule_id = st.sidebar.text_input(
+    "Firewall Rule ID",
+    placeholder="Search rule ID",
+    key="event_filter_rule_id",
+)
+
+filter_client_ip = st.sidebar.text_input(
+    "Client IP (exact match)",
+    placeholder="e.g. 192.0.2.10",
+    key="event_filter_client_ip",
+)
+
+filter_user_id = st.sidebar.text_input(
+    "User ID",
+    placeholder="Search user ID",
+    key="event_filter_user_id",
+)
+
+severity_label = st.sidebar.selectbox(
+    "Severity",
+    options=["All", "High", "Other"],
+    index=0,
+    key="event_filter_severity",
+)
+
+st.sidebar.caption(
+    "High = BLOCK with ML score above 0.90. "
+    "Other = events not meeting that rule. "
+    "This follows the existing telemetry audit policy."
+)
+
+filter_date_enabled = st.sidebar.checkbox(
+    "Enable date/time range",
+    value=False,
+    key="event_filter_date_enabled",
+)
+
+filter_start_datetime = None
+filter_end_datetime = None
+
+if filter_date_enabled:
+    filter_start_date = st.sidebar.date_input(
+        "Start date (IST)",
+        value=default_start_date,
+        key="event_filter_start_date",
+    )
+    filter_start_time = st.sidebar.time_input(
+        "Start time (IST)",
+        value=time(0, 0),
+        key="event_filter_start_time",
+    )
+
+    filter_end_date = st.sidebar.date_input(
+        "End date (IST)",
+        value=default_end_date,
+        key="event_filter_end_date",
+    )
+    filter_end_time = st.sidebar.time_input(
+        "End time (IST)",
+        value=time(23, 59, 59),
+        key="event_filter_end_time",
+    )
+
+    filter_start_datetime = datetime.combine(
+        filter_start_date,
+        filter_start_time,
+    ).replace(tzinfo=local_timezone)
+
+    filter_end_datetime = datetime.combine(
+        filter_end_date,
+        filter_end_time,
+    ).replace(
+        tzinfo=local_timezone,
+        microsecond=999999,
+    )
+
+
 @st.fragment(run_every="2s")
 def render_live_telemetry():
     """Poll the log and refresh telemetry metrics and the event table."""
@@ -340,17 +445,57 @@ def render_live_telemetry():
         sort_field = SORTABLE_FIELDS[sort_label]
         descending = sort_order == "Descending"
 
-        # Reset pagination whenever sorting or page size changes.
-        sort_signature = (sort_field, descending, page_size)
+        severity_value = {
+            "All": "ALL",
+            "High": "HIGH",
+            "Other": "OTHER",
+        }[severity_label]
 
-        if st.session_state.get("event_table_sort_signature") != sort_signature:
-            st.session_state["event_table_sort_signature"] = sort_signature
+        filter_signature = (
+            filter_rule_id.strip(),
+            filter_client_ip.strip(),
+            filter_user_id.strip(),
+            severity_value,
+            filter_date_enabled,
+            filter_start_datetime,
+            filter_end_datetime,
+        )
+
+        # Reset pagination when filters, sorting or page size change.
+        view_signature = (
+            sort_field,
+            descending,
+            page_size,
+            filter_signature,
+        )
+
+        if st.session_state.get("event_table_view_signature") != view_signature:
+            st.session_state["event_table_view_signature"] = view_signature
             st.session_state["event_table_page"] = 1
 
+        try:
+            filtered_events = filter_events(
+                snapshot.recent_events,
+                rule_id=filter_rule_id,
+                client_ip=filter_client_ip,
+                user_id=filter_user_id,
+                severity=severity_value,
+                start_datetime=filter_start_datetime,
+                end_datetime=filter_end_datetime,
+            )
+        except ValueError as exc:
+            st.sidebar.error(str(exc))
+            filtered_events = []
+
         sorted_events = sort_events(
-            snapshot.recent_events,
+            filtered_events,
             sort_by=sort_field,
             descending=descending,
+        )
+
+        st.caption(
+            f"{len(filtered_events)} matching events out of "
+            f"{len(snapshot.recent_events)} recent validated events."
         )
 
         total_items = len(sorted_events)
@@ -394,13 +539,16 @@ def render_live_telemetry():
 
         st.session_state["event_table_page"] = current_page
 
-        start_item = (current_page - 1) * page_size + 1
-        end_item = min(current_page * page_size, total_items)
+        if total_items:
+            start_item = (current_page - 1) * page_size + 1
+            end_item = min(current_page * page_size, total_items)
 
-        st.caption(
-            f"Showing {start_item}–{end_item} of {total_items} "
-            f"events in the current recent-event window."
-        )
+            st.caption(
+                f"Showing {start_item}–{end_item} of {total_items} "
+                "matching events in the recent-event window."
+            )
+        else:
+            st.info("No events match the selected filters.")
 
         # Presentation-only rows. Original SIEM events remain unchanged.
         display_rows = []
@@ -420,12 +568,13 @@ def render_live_telemetry():
                 }
             )
 
-        st.dataframe(
-            display_rows,
-            hide_index=True,
-            width="stretch",
-            height=480,
-        )
+        if display_rows:
+            st.dataframe(
+                display_rows,
+                hide_index=True,
+                width="stretch",
+                height=480,
+            )
 
     if snapshot.malformed:
         st.warning(
