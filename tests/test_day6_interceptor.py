@@ -6,7 +6,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 @pytest.fixture
 def interceptor():
-    return DLPInterceptor()
+    instance = DLPInterceptor(redis_db=15)
+
+    instance._vault._redis.flushdb()
+
+    yield instance
+
+    instance._vault._redis.flushdb()
 
 
 def test_basic_masking_and_restoration(interceptor):

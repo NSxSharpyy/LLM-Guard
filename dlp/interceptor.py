@@ -1,7 +1,7 @@
 
 """DLPInterceptor — the public entry point into the DLP module.
 
-Combines DLPEngine, PlaceholderManager and Vault.
+Combines DLPEngine, PlaceholderManager and a session vault.
 Maintains unique placeholders across calls within each session.
 """
 
@@ -9,18 +9,36 @@ import threading
 
 from dlp.dlp_engine import DLPEngine
 from dlp.placeholder_manager import PlaceholderManager
-from dlp.vault import Vault
+from dlp.redis_vault import RedisVault
 
 
 class DLPInterceptor:
     """Public interface for reversible PII and secret masking."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        vault=None,
+        redis_host="localhost",
+        redis_port=6379,
+        redis_db=0,
+        redis_password=None,
+        ttl_seconds=900,
+    ):
         self._engine = DLPEngine(include_original_value=True)
-        self._vault = Vault()
+
+        # RedisVault is the default backend.
+        # An explicitly supplied vault can be used for testing
+        # or for an in-memory fallback.
+        self._vault = vault if vault is not None else RedisVault(
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            password=redis_password,
+            ttl_seconds=ttl_seconds,
+        )
+
         self._session_managers = {}
         self._lock = threading.RLock()
-
 
     def redact(self, text: str, session_id: str):
         """Mask sensitive information and store session mappings."""
@@ -36,8 +54,6 @@ class DLPInterceptor:
             if not entities_found:
                 return text, []
 
-            # Work on a temporary manager so failures cannot
-            # corrupt an existing session or leave a partial one.
             manager = PlaceholderManager()
 
             existing_manager = self._session_managers.get(session_id)
@@ -120,3 +136,11 @@ class DLPInterceptor:
         """Check whether a session exists in the vault."""
 
         return self._vault.has_session(session_id)
+
+    def is_vault_healthy(self) -> bool:
+        """Return False if the configured vault is unavailable."""
+
+        try:
+            return bool(self._vault.ping())
+        except Exception:
+            return False

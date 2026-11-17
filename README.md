@@ -6,9 +6,11 @@
 
 LLM-Guard DLP identifies sensitive information before it is exposed to Large Language Models or external services.
 
-The project uses Microsoft Presidio, custom recognizers, deterministic semantic placeholders, and a session-scoped reversible vault to protect sensitive information while preserving the context of LLM prompts and responses.
+The project uses Microsoft Presidio, custom recognizers, deterministic semantic placeholders, and session-scoped reversible vaults to protect sensitive information while preserving the context of LLM prompts and responses.
 
-## Current Implementation — Days 1–6
+The system supports both in-memory and Redis-backed vault storage.
+
+## Current Implementation — Days 1–6, 8–9
 
 ### Day 1 – Environment Setup and PII Detection
 - Microsoft Presidio integration.
@@ -51,13 +53,35 @@ The project uses Microsoft Presidio, custom recognizers, deterministic semantic 
 - Original-value metadata removed from returned detection results.
 - Session isolation and cleanup.
 
+### Day 8 – Regex Pre-filter and Latency Profiling
+- Regex-based pre-filter for identifying prompts that may contain sensitive information.
+- Fast-path handling for prompts that do not match configured sensitive-information patterns.
+- Integration with the DLP processing workflow.
+- Baseline latency profiling across different prompt scenarios.
+- Performance measurement using mean, median, minimum, and maximum execution times.
+
+### Day 9 – Redis-Backed Session-Scoped Reversible Vault
+- Redis-backed placeholder-to-original-value storage.
+- Independent mappings for each session.
+- Configurable mapping expiration using TTL.
+- Automatic expiration of stored mappings.
+- Session-specific mapping retrieval.
+- Reversible text restoration.
+- Session cleanup and existence checking.
+- Session counting.
+- Placeholder and original-value input validation.
+- Redis connectivity verification.
+- Dedicated Redis integration tests.
+
 ## Technology Stack
 
 - Python 3.11
-- Microsoft Presidio Analyzer
-- Microsoft Presidio Anonymizer
+- Microsoft Presidio Analyzer 2.2.355
+- Microsoft Presidio Anonymizer 2.2.355
 - spaCy 3.7.5
 - pytest 8.3.2
+- Redis 5.0.8
+- Redis Server
 
 ## Installation
 
@@ -87,6 +111,33 @@ Download the English spaCy model:
 python -m spacy download en_core_web_sm
 ```
 
+### Redis Server Setup
+
+Install Redis Server on Kali Linux or Debian-based systems:
+
+```bash
+sudo apt update
+sudo apt install redis-server
+```
+
+Start the Redis service:
+
+```bash
+sudo systemctl enable --now redis-server
+```
+
+Verify Redis availability:
+
+```bash
+redis-cli ping
+```
+
+Expected output:
+
+```text
+PONG
+```
+
 ## Setup Verification
 
 ```bash
@@ -101,6 +152,12 @@ Run the complete regression suite:
 python -m pytest -v
 ```
 
+Run Day 9 Redis Vault tests independently:
+
+```bash
+python -m pytest tests/test_day9_redis_vault.py -v
+```
+
 Compile the project:
 
 ```bash
@@ -108,6 +165,8 @@ python -m compileall -q dlp tests examples
 ```
 
 ## Basic Usage
+
+The public DLPInterceptor interface supports masking and reversible restoration:
 
 ```python
 from dlp import DLPInterceptor
@@ -137,6 +196,41 @@ finally:
     dlp.end_session(session_id)
 ```
 
+### RedisVault Usage
+
+RedisVault provides Redis-backed storage as an alternative to the in-memory Vault.
+
+```python
+from dlp.redis_vault import RedisVault
+
+vault = RedisVault(
+    host="localhost",
+    port=6379,
+    db=0,
+    ttl_seconds=900
+)
+
+session_id = "conversation-123"
+
+if vault.ping():
+    vault.store(session_id, {
+        "<EMAIL_1>": "john@example.com"
+    })
+
+    masked_text = "Contact <EMAIL_1>"
+
+    restored_text = vault.unmask_text(
+        masked_text,
+        session_id
+    )
+
+    print(restored_text)
+
+    vault.clear_session(session_id)
+```
+
+The default mapping TTL is 900 seconds (15 minutes). It can be configured when creating the RedisVault instance.
+
 See [docs/integration-guide.md](docs/integration-guide.md) for the complete integration workflow and security considerations.
 
 ## Project Structure
@@ -149,15 +243,20 @@ llm-guard-dlp/
 │   ├── dlp_engine.py
 │   ├── interceptor.py
 │   ├── placeholder_manager.py
+│   ├── pre_filter.py
+│   ├── redis_vault.py
 │   ├── vault.py
 │   └── verhoeff.py
 ├── docs/
 │   ├── day2-baseline-redaction.md
+│   ├── day8-latency-report.md
 │   ├── entity-catalog.md
 │   └── integration-guide.md
 ├── examples/
 │   └── usage_example.py
 ├── scripts/
+│   ├── distributed_retrieval_demo.py
+│   ├── profile_latency.py
 │   └── verify_setup.py
 ├── tests/
 │   ├── test_day1_setup.py
@@ -165,7 +264,8 @@ llm-guard-dlp/
 │   ├── test_day3_custom_recognizers.py
 │   ├── test_day4_placeholders.py
 │   ├── test_day5_vault.py
-│   └── test_day6_interceptor.py
+│   ├── test_day6_interceptor.py
+│   └── test_day9_redis_vault.py
 ├── requirements.txt
 ├── README.md
 └── .gitignore
@@ -173,40 +273,51 @@ llm-guard-dlp/
 
 ## Security and Retention Considerations
 
-- The vault is in-memory and session-scoped.
+- Sensitive values are replaced with semantic placeholders before being forwarded to an LLM.
+- The in-memory Vault provides session-scoped, thread-safe mapping storage.
+- RedisVault provides Redis-backed mapping storage with configurable automatic expiration.
+- Redis mappings expire according to their configured TTL.
 - Session IDs must be securely generated and protected by the integrating application.
 - The vault does not independently authenticate users.
-- Session mappings are removed through `end_session()`.
+- Session mappings can be explicitly removed using session cleanup.
 - The application must not forward original sensitive values or sensitive detection metadata to the LLM.
-- The current implementation does not provide persistent storage or automatic session expiration.
-- Redis-backed storage with automatic expiration is planned for a future development stage.
+- Redis should be protected with appropriate authentication, network restrictions, and transport security in production environments.
+- Redis persistence, backups, and server-side retention policies must be configured according to the application's security requirements.
 
 ## Development Roadmap
 
-Completed:
+### Completed
 - Environment setup and PII detection.
 - Baseline PII redaction.
 - Custom sensitive-information recognizers.
 - Deterministic semantic placeholder masking.
-- Session-scoped reversible vault.
+- Session-scoped reversible in-memory vault.
 - DLPInterceptor public interface.
+- Regex pre-filter and baseline latency profiling.
+- Redis-backed session-scoped reversible vault.
+- Configurable mapping TTL and automatic expiration.
+- Redis integration and regression testing.
 
-Upcoming:
-- LLM prompt inspection and integration.
+### Upcoming
+- Further LLM prompt inspection and integration.
 - Sensitive information leakage prevention.
 - Additional security validation.
-- Redis-backed vault with automatic expiration.
+- Performance optimization and benchmarking.
 
 ## Project Status
 
-Days 1–6: Implementation and functional validation completed.
+**Days 1–6, 8–9: Implementation and functional validation completed.**
 
-Latest validation:
-- 101 tests passed.
+Latest full regression validation:
+
+- 157 tests passed.
+- 10 tests skipped.
+- 0 test failures.
 - Python compilation successful.
-- Public package import successful.
-- Usage example successful.
+- Redis connectivity verified.
+- 31 Day 9 Redis Vault tests passed.
+- Redis TTL expiration verified.
 - Session isolation and cleanup verified.
-- Reordered placeholder handling verified.
+- Cross-process mapping retrieval verified.
+- Redis-backed DLPInterceptor integration verified.
 - One third-party spaCy/Click deprecation warning.
-EOF
