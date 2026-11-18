@@ -20,6 +20,7 @@ class EventSnapshot:
     blocked: int
     malformed: int
     recent_events: list[dict[str, Any]]
+    new_events: list[dict[str, Any]]
     rule_counts: dict[str, int]
     hourly_counts: dict[str, int]
     message: str
@@ -51,6 +52,7 @@ class JsonlEventTailReader:
         self._identity: tuple[int, int] | None = None
         self._offset = 0
         self._pending = b""
+        self._has_baseline = False
 
         self.total = 0
         self.allowed = 0
@@ -84,7 +86,9 @@ class JsonlEventTailReader:
 
         self.message = "Security log file opened or replaced."
 
-    def _process_line(self, raw_line: bytes) -> None:
+    def _process_line(
+        self, raw_line: bytes
+    ) -> dict[str, Any] | None:
         """Parse and validate one complete JSONL record."""
         if not raw_line.strip():
             return
@@ -131,6 +135,7 @@ class JsonlEventTailReader:
         )
 
         self.recent_events.append(event)
+        return event
 
     def poll(self) -> EventSnapshot:
         """Read bytes appended since the previous poll."""
@@ -149,10 +154,11 @@ class JsonlEventTailReader:
 
         identity = (stat.st_dev, stat.st_ino)
 
-        if (
+        suppress_new_events = (
             identity != self._identity
             or stat.st_size < self._offset
-        ):
+        )
+        if suppress_new_events:
             self._reset_for_new_file(identity)
 
         try:
@@ -170,8 +176,15 @@ class JsonlEventTailReader:
         complete_lines = data.split(b"\n")
         self._pending = complete_lines.pop()
 
+        new_events = []
         for line in complete_lines:
-            self._process_line(line.rstrip(b"\r"))
+            event = self._process_line(line.rstrip(b"\r"))
+            if (
+                event is not None
+                and self._has_baseline
+                and not suppress_new_events
+            ):
+                new_events.append(event)
 
         if self._pending:
             message = "Waiting for the current JSONL record to finish."
@@ -179,12 +192,18 @@ class JsonlEventTailReader:
             message = "Security event log read successfully."
 
         self.message = message
-        return self.snapshot(available=True, message=message)
+        self._has_baseline = True
+        return self.snapshot(
+            available=True,
+            message=message,
+            new_events=new_events,
+        )
 
     def snapshot(
         self,
         available: bool = True,
         message: str | None = None,
+        new_events: list[dict[str, Any]] | None = None,
     ) -> EventSnapshot:
         """Return the current reader metrics and recent event window."""
         return EventSnapshot(
@@ -194,6 +213,7 @@ class JsonlEventTailReader:
             blocked=self.blocked,
             malformed=self.malformed,
             recent_events=list(self.recent_events),
+            new_events=list(new_events or []),
             rule_counts=dict(self.rule_counts),
             hourly_counts=dict(self.hourly_counts),
             message=message or self.message,

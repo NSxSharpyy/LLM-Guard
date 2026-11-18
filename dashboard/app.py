@@ -21,6 +21,7 @@ import streamlit as st
 
 from dashboard.event_reader import JsonlEventTailReader
 from dashboard.event_filters import filter_events
+from dashboard.alerts import HighSeverityAlertTracker
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
@@ -275,9 +276,19 @@ if "event_reader" not in st.session_state:
         max_recent=100,
     )
 
+if "alert_tracker" not in st.session_state:
+    st.session_state.alert_tracker = HighSeverityAlertTracker()
 
-# Load the current recent window to establish sensible date defaults.
-filter_initial_snapshot = st.session_state.event_reader.poll()
+
+def poll_security_events():
+    """Poll telemetry and pass newly appended events to the alert tracker."""
+    snapshot = st.session_state.event_reader.poll()
+    st.session_state.alert_tracker.ingest(snapshot.new_events)
+    return snapshot
+
+
+# Establish the initial reader baseline without alerting on historical records.
+filter_initial_snapshot = poll_security_events()
 
 recent_datetimes = [
     datetime.fromisoformat(
@@ -382,7 +393,36 @@ if filter_date_enabled:
 @st.fragment(run_every="2s")
 def render_live_telemetry():
     """Poll the log and refresh telemetry metrics and the event table."""
-    snapshot = st.session_state.event_reader.poll()
+    snapshot = poll_security_events()
+
+    alert_tracker = st.session_state.alert_tracker
+
+    # Toast notifications are consumed once; persistent banners remain visible.
+    for event in alert_tracker.consume_notifications():
+        st.toast(
+            f"High-severity attack: {event['rule_id']} "
+            f"(confidence {float(event['ml_score']) * 100:.1f}%)",
+            icon="🚨",
+            duration="long",
+        )
+
+    if alert_tracker.alerts:
+        st.subheader("🚨 High-Severity Threat Alerts")
+
+        if st.button("Dismiss visible alerts", key="dismiss_threat_alerts"):
+            alert_tracker.clear()
+
+        for event in list(alert_tracker.alerts):
+            st.error(
+                "**HIGH-SEVERITY ATTACK DETECTED**\n\n"
+                f"**Rule:** {event['rule_id']}  |  "
+                f"**Confidence:** {float(event['ml_score']) * 100:.1f}%\n\n"
+                f"**Client IP:** {event['client_ip']}  |  "
+                f"**User:** {event['user_id']} ({event['user_role']})\n\n"
+                f"**Timestamp:** {event['timestamp']}\n\n"
+                f"**Trace ID:** `{event['trace_id']}`",
+                icon="🚨",
+            )
 
     total_col, allowed_col, blocked_col, malformed_col = st.columns(4)
 

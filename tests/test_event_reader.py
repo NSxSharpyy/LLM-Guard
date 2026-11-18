@@ -277,3 +277,71 @@ def test_reader_does_not_aggregate_malformed_records(tmp_path):
     assert result.malformed == 1
     assert result.rule_counts == {}
     assert result.hourly_counts == {}
+
+
+def test_reader_returns_only_newly_appended_events(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+    append_event(path, make_event(1, "BLOCK"))
+
+    reader = JsonlEventTailReader(path)
+
+    initial = reader.poll()
+    assert initial.total == 1
+    assert initial.new_events == []
+
+    append_event(path, make_event(2, "BLOCK"))
+
+    appended = reader.poll()
+    assert [event["trace_id"] for event in appended.new_events] == [
+        "reader-test-2"
+    ]
+
+    assert reader.poll().new_events == []
+
+
+def test_reader_exposes_event_only_after_complete_jsonl_line(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+    append_event(path, make_event(1, "ALLOW"))
+
+    reader = JsonlEventTailReader(path)
+    reader.poll()
+
+    event_bytes = json.dumps(make_event(2, "BLOCK")).encode("utf-8")
+    split_at = len(event_bytes) // 2
+
+    with path.open("ab") as file:
+        file.write(event_bytes[:split_at])
+
+    partial = reader.poll()
+    assert partial.new_events == []
+
+    with path.open("ab") as file:
+        file.write(event_bytes[split_at:] + b"\n")
+
+    completed = reader.poll()
+    assert [event["trace_id"] for event in completed.new_events] == [
+        "reader-test-2"
+    ]
+
+
+def test_reader_suppresses_existing_records_after_file_replacement(tmp_path):
+    path = tmp_path / "security_events.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+
+    append_event(path, make_event(1, "BLOCK"))
+    reader = JsonlEventTailReader(path)
+    reader.poll()
+
+    append_event(replacement, make_event(2, "BLOCK"))
+    replacement.replace(path)
+
+    replaced = reader.poll()
+    assert replaced.total == 1
+    assert replaced.new_events == []
+
+    append_event(path, make_event(3, "BLOCK"))
+
+    appended = reader.poll()
+    assert [event["trace_id"] for event in appended.new_events] == [
+        "reader-test-3"
+    ]
