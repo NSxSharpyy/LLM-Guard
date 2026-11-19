@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import os
 import shutil
 import subprocess
 from datetime import datetime, time
@@ -20,11 +21,20 @@ import altair as alt
 import streamlit as st
 
 from dashboard.event_reader import JsonlEventTailReader
+from dashboard.latency_reader import JsonlLatencyTailReader
 from dashboard.event_filters import filter_events
 from dashboard.alerts import HighSeverityAlertTracker
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
+
+
+LATENCY_LOG_PATH = Path(
+    os.getenv(
+        "LATENCY_METRICS_PATH",
+        str(Path(DEFAULT_LOG_PATH).with_name("latency_metrics.jsonl")),
+    )
+)
 
 
 PROXY_HEALTH_URL = "http://127.0.0.1:8000/healthz"
@@ -276,6 +286,13 @@ if "event_reader" not in st.session_state:
         max_recent=100,
     )
 
+if "latency_reader" not in st.session_state:
+    st.session_state.latency_reader = JsonlLatencyTailReader(
+        path=LATENCY_LOG_PATH,
+        max_samples=500,
+    )
+
+
 if "alert_tracker" not in st.session_state:
     st.session_state.alert_tracker = HighSeverityAlertTracker()
 
@@ -288,6 +305,11 @@ def poll_security_events():
 
 
 # Establish the initial reader baseline without alerting on historical records.
+def poll_latency_metrics():
+    """Poll the independent proxy latency JSONL sidecar."""
+    return st.session_state.latency_reader.poll()
+
+
 filter_initial_snapshot = poll_security_events()
 
 recent_datetimes = [
@@ -390,10 +412,124 @@ if filter_date_enabled:
     )
 
 
+def render_latency_metrics(snapshot):
+    """Render comparable unary latency KPIs and separate streaming telemetry."""
+    st.subheader("Latency Monitoring")
+
+    if not snapshot.available:
+        st.info(
+            "Latency metrics are not available yet. "
+            "Start the proxy with latency instrumentation enabled."
+        )
+        return
+
+    firewall_value = (
+        f"{snapshot.firewall_avg_ms:.2f} ms"
+        if snapshot.firewall_avg_ms is not None
+        else "—"
+    )
+    upstream_value = (
+        f"{snapshot.upstream_avg_ms:.2f} ms"
+        if snapshot.upstream_avg_ms is not None
+        else "—"
+    )
+
+    firewall_col, upstream_col = st.columns(2)
+
+    firewall_col.metric(
+        "Firewall Inspection Latency",
+        firewall_value,
+        help=(
+            "Average proxy processing time before upstream dispatch, "
+            "for successful unary requests only."
+        ),
+    )
+    upstream_col.metric(
+        "Upstream LLM Latency",
+        upstream_value,
+        help=(
+            "Average upstream full-response time for the same successful "
+            "unary requests used by the firewall KPI."
+        ),
+    )
+
+    st.caption(
+        f"Unary comparison sample count: {snapshot.unary_sample_count}. "
+        f"Metrics use the most recent {len(snapshot.recent_samples)} "
+        "accepted latency records (maximum 500)."
+    )
+
+    if snapshot.unary_sample_count:
+        chart_data = [
+            {
+                "component": "Firewall inspection",
+                "latency_ms": snapshot.firewall_avg_ms,
+            },
+            {
+                "component": "Upstream LLM",
+                "latency_ms": snapshot.upstream_avg_ms,
+            },
+        ]
+
+        latency_chart = (
+            alt.Chart(alt.Data(values=chart_data))
+            .mark_bar()
+            .encode(
+                x=alt.X("latency_ms:Q", title="Average latency (ms)"),
+                y=alt.Y(
+                    "component:N",
+                    title=None,
+                    sort=["Firewall inspection", "Upstream LLM"],
+                ),
+                tooltip=[
+                    alt.Tooltip("component:N", title="Component"),
+                    alt.Tooltip(
+                        "latency_ms:Q",
+                        title="Average latency",
+                        format=".2f",
+                    ),
+                ],
+            )
+            .properties(
+                title="Firewall vs Upstream Latency — Unary Requests",
+                height=170,
+            )
+        )
+        st.altair_chart(latency_chart, width="stretch")
+    else:
+        st.info(
+            "No completed unary requests are available for the latency "
+            "comparison yet."
+        )
+
+    streaming_value = (
+        f"{snapshot.streaming_avg_ms:.2f} ms"
+        if snapshot.streaming_avg_ms is not None
+        else "—"
+    )
+    stream_col, stream_info_col = st.columns([1, 2])
+
+    stream_col.metric(
+        "Streaming Full-Response Latency",
+        streaming_value,
+        help=(
+            "Average completed streaming response duration. "
+            "Kept separate from unary upstream latency."
+        ),
+    )
+    stream_info_col.caption(
+        f"Completed streams: {snapshot.streaming_sample_count} · "
+        f"Blocked before forwarding: {snapshot.blocked_sample_count} · "
+        f"Interrupted streams: {snapshot.interrupted_sample_count} · "
+        f"Malformed latency records: {snapshot.malformed}"
+    )
+
+
 @st.fragment(run_every="2s")
 def render_live_telemetry():
     """Poll the log and refresh telemetry metrics and the event table."""
     snapshot = poll_security_events()
+    latency_snapshot = poll_latency_metrics()
 
     alert_tracker = st.session_state.alert_tracker
 
@@ -444,6 +580,7 @@ def render_live_telemetry():
 
     st.caption(snapshot.message)
     st.caption(f"Telemetry source: `{DEFAULT_LOG_PATH}`")
+    render_latency_metrics(latency_snapshot)
 
     if snapshot.available and snapshot.total:
         render_analytics(snapshot)
