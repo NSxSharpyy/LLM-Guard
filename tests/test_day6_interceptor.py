@@ -238,25 +238,233 @@ def test_detection_exception_does_not_create_session(
             session,
         )
 
+    assert interceptor.has_session(session) is False
     assert interceptor.active_session_count() == 0
-    assert session not in interceptor._session_managers
 
 
-
-def test_placeholder_exception_does_not_leave_partial_session(
+def test_allocation_exception_does_not_leave_partial_session(
     interceptor,
     monkeypatch,
 ):
-    from dlp.placeholder_manager import PlaceholderManager
+    session = "allocation-error-session"
 
-    session = "placeholder-error-session"
-
-    # Simulate an entity returned by the detection engine.
     def fake_engine_redact(text):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": 8,
+                "end": 24,
+                "original_value": "john@example.com",
+            }
+        ]
+
+    def raise_allocation_error(session_id, entities):
+        raise RuntimeError("Simulated Redis allocation failure")
+
+    monkeypatch.setattr(
+        interceptor._engine,
+        "redact",
+        fake_engine_redact,
+    )
+
+    monkeypatch.setattr(
+        interceptor._vault,
+        "allocate_placeholders",
+        raise_allocation_error,
+    )
+
+    with pytest.raises(RuntimeError):
+        interceptor.redact(
+            "Contact john@example.com",
+            session,
+        )
+
+    assert interceptor.has_session(session) is False
+    assert interceptor.active_session_count() == 0
+
+
+def test_allocation_exception_preserves_existing_session(
+    interceptor,
+    monkeypatch,
+):
+    session = "existing-session-error"
+
+    # First redaction succeeds and creates EMAIL_1.
+    masked_text, _ = interceptor.redact(
+        "Contact john@example.com",
+        session,
+    )
+
+    assert masked_text == "Contact <EMAIL_1>"
+
+    original_mapping = interceptor._vault.get_mapping(session)
+
+    assert original_mapping == {
+        "<EMAIL_1>": "john@example.com"
+    }
+
+    def fake_engine_redact(text):
+        return text, [
+            {
+                "entity_type": "EMAIL_ADDRESS",
+                "start": 8,
+                "end": 24,
+                "original_value": "jane@example.com",
+            }
+        ]
+
+    def raise_allocation_error(session_id, entities):
+        raise RuntimeError("Simulated Redis allocation failure")
+
+    monkeypatch.setattr(
+        interceptor._engine,
+        "redact",
+        fake_engine_redact,
+    )
+
+    monkeypatch.setattr(
+        interceptor._vault,
+        "allocate_placeholders",
+        raise_allocation_error,
+    )
+
+    with pytest.raises(RuntimeError):
+        interceptor.redact(
+            "Contact jane@example.com",
+            session,
+        )
+
+    # Existing Redis mappings must remain unchanged.
+    assert interceptor._vault.get_mapping(session) == original_mapping
+
+    assert interceptor.unmask(
+        "Contact <EMAIL_1>",
+        session,
+    ) == "Contact john@example.com"
+
+def test_independent_interceptors_do_not_collide(interceptor):
+    session = "cross-worker-session"
+
+    worker_a = interceptor
+    worker_b = DLPInterceptor(redis_db=15)
+
+    first, _ = worker_a.redact(
+        "Contact alice@example.com",
+        session,
+    )
+
+    second, _ = worker_b.redact(
+        "Contact bob@example.com",
+        session,
+    )
+
+    third, _ = worker_b.redact(
+        "Again alice@example.com",
+        session,
+    )
+
+    assert first == "Contact <EMAIL_1>"
+    assert second == "Contact <EMAIL_2>"
+    assert third == "Again <EMAIL_1>"
+
+    assert worker_a.unmask(first, session) == (
+        "Contact alice@example.com"
+    )
+
+    assert worker_b.unmask(second, session) == (
+        "Contact bob@example.com"
+    )
+
+    assert worker_b.unmask(third, session) == (
+        "Again alice@example.com"
+    )
+
+    worker_a.end_session(session)
+
+
+@pytest.mark.parametrize(
+    "invalid_entity",
+    [
+        {
+            "entity_type": "EMAIL_ADDRESS",
+            "start": -1,
+            "end": 7,
+            "original_value": "john@example.com",
+        },
+        {
+            "entity_type": "EMAIL_ADDRESS",
+            "start": 8,
+            "end": 100,
+            "original_value": "john@example.com",
+        },
+        {
+            "entity_type": "EMAIL_ADDRESS",
+            "start": 8,
+            "end": 24,
+            "original_value": "jane@example.com",
+        },
+        {
+            "entity_type": "EMAIL_ADDRESS",
+            "start": 8,
+            "end": 24,
+        },
+        {
+            "entity_type": "EMAIL_ADDRESS",
+            "start": True,
+            "end": 24,
+            "original_value": "john@example.com",
+        },
+    ],
+)
+def test_invalid_entity_metadata_rejected_before_allocation(
+    interceptor,
+    monkeypatch,
+    invalid_entity,
+):
+    session = "invalid-metadata-session"
+    allocation_called = False
+
+    def fake_engine_redact(text):
+        return text, [invalid_entity]
+
+    def track_allocation(session_id, entities):
+        nonlocal allocation_called
+        allocation_called = True
+        return ["<EMAIL_1>"]
+
+    monkeypatch.setattr(
+        interceptor._engine,
+        "redact",
+        fake_engine_redact,
+    )
+
+    monkeypatch.setattr(
+        interceptor._vault,
+        "allocate_placeholders",
+        track_allocation,
+    )
+
+    with pytest.raises(ValueError):
+        interceptor.redact(
+            "Contact john@example.com",
+            session,
+        )
+
+    assert allocation_called is False
+    assert interceptor.has_session(session) is False
+
+
+def test_entity_offsets_must_be_integers(
+    interceptor,
+    monkeypatch,
+):
+    session = "invalid-offset-type-session"
+
+    def fake_engine_redact(text):
+        return text, [
+            {
+                "entity_type": "EMAIL_ADDRESS",
+                "start": "8",
                 "end": 24,
                 "original_value": "john@example.com",
             }
@@ -268,51 +476,42 @@ def test_placeholder_exception_does_not_leave_partial_session(
         fake_engine_redact,
     )
 
-    # Raise specifically during interceptor placeholder generation.
-    original_method = PlaceholderManager.get_placeholder
+    with pytest.raises(ValueError):
+        interceptor.redact(
+            "Contact john@example.com",
+            session,
+        )
 
-    def raise_after_generation(self, entity_type, original_value):
-        original_method(self, entity_type, original_value)
-        raise RuntimeError("Simulated placeholder failure")
+    assert interceptor.has_session(session) is False
 
-    monkeypatch.setattr(
-        PlaceholderManager,
-        "get_placeholder",
-        raise_after_generation,
-    )
 
-    with pytest.raises(RuntimeError):
-        interceptor.redact("Contact john@example.com", session)
-
-    assert interceptor.active_session_count() == 0
-    assert session not in interceptor._session_managers
-
-def test_placeholder_exception_preserves_existing_session(
+def test_overlapping_entity_offsets_rejected_before_allocation(
     interceptor,
     monkeypatch,
 ):
-    from dlp.placeholder_manager import PlaceholderManager
+    session = "overlapping-entities-session"
+    allocation_called = False
 
-    session = "existing-session-error"
-
-    # First redaction succeeds and creates EMAIL_1.
-    masked_text, _ = interceptor.redact(
-        "Contact john@example.com",
-        session,
-    )
-
-    assert masked_text == "Contact <EMAIL_1>"
-
-    # Simulate a second redaction for a different email.
     def fake_engine_redact(text):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": 8,
                 "end": 24,
-                "original_value": "jane@example.com",
-            }
+                "original_value": "john@example.com",
+            },
+            {
+                "entity_type": "PHONE_NUMBER",
+                "start": 13,
+                "end": 20,
+                "original_value": "example",
+            },
         ]
+
+    def track_allocation(session_id, entities):
+        nonlocal allocation_called
+        allocation_called = True
+        return ["<EMAIL_1>", "<PHONE_1>"]
 
     monkeypatch.setattr(
         interceptor._engine,
@@ -320,35 +519,89 @@ def test_placeholder_exception_preserves_existing_session(
         fake_engine_redact,
     )
 
-    # Raise during the interceptor's placeholder generation.
-    original_method = PlaceholderManager.get_placeholder
+    monkeypatch.setattr(
+        interceptor._vault,
+        "allocate_placeholders",
+        track_allocation,
+    )
 
-    def raise_after_generation(self, entity_type, original_value):
-        original_method(self, entity_type, original_value)
-        raise RuntimeError("Simulated placeholder failure")
+    with pytest.raises(ValueError, match="must not overlap"):
+        interceptor.redact(
+            "Contact john@example.com",
+            session,
+        )
+
+    assert allocation_called is False
+    assert interceptor.has_session(session) is False
+
+
+@pytest.mark.parametrize(
+    "invalid_response",
+    [
+        None,
+        (),
+        [],
+        [None],
+        ["INVALID_PLACEHOLDER"],
+        ["<EMAIL>"],
+        ["<EMAIL_1>", "<EMAIL_2>"],
+    ],
+)
+def test_invalid_vault_placeholder_response_rejected(
+    interceptor,
+    monkeypatch,
+    invalid_response,
+):
+    session = "invalid-placeholder-session"
+
+    def fake_engine_redact(text):
+        return text, [
+            {
+                "entity_type": "EMAIL_ADDRESS",
+                "start": 8,
+                "end": 24,
+                "original_value": "john@example.com",
+            },
+        ]
+
+    def fake_allocation(session_id, entities):
+        return invalid_response
 
     monkeypatch.setattr(
-        PlaceholderManager,
-        "get_placeholder",
-        raise_after_generation,
+        interceptor._engine,
+        "redact",
+        fake_engine_redact,
+    )
+
+    monkeypatch.setattr(
+        interceptor._vault,
+        "allocate_placeholders",
+        fake_allocation,
     )
 
     with pytest.raises(RuntimeError):
         interceptor.redact(
-            "Contact jane@example.com",
+            "Contact john@example.com",
             session,
         )
 
-    # The original session state must remain intact.
-    assert interceptor._vault.get_mapping(session) == {
-        "<EMAIL_1>": "john@example.com"
-    }
+def test_repeated_value_in_same_text_reuses_placeholder(interceptor):
+    text = (
+        "Contact alice@example.com or "
+        "email alice@example.com again."
+    )
 
-    assert interceptor.unmask(
-        "Contact <EMAIL_1>",
-        session,
-    ) == "Contact john@example.com"
+    masked, entities = interceptor.redact(
+        text,
+        "repeated-value-session",
+    )
 
-    assert interceptor._session_managers[session].value_mapping == {
-        ("EMAIL_ADDRESS", "john@example.com"): "<EMAIL_1>"
-    }
+    assert masked.count("<EMAIL_1>") == 2
+    assert len(entities) == 2
+
+    restored = interceptor.unmask(
+        masked,
+        "repeated-value-session",
+    )
+
+    assert restored == text

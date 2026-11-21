@@ -59,6 +59,59 @@ def test_clear_session(vault):
     assert vault.has_session("session2") is True
 
 
+def test_clear_session_removes_all_indexed_keys(vault):
+    session_id = "indexed-cleanup-session"
+
+    entities = [
+        {
+            "entity_type": "EMAIL_ADDRESS",
+            "original_value": "alice@example.com",
+        },
+        {
+            "entity_type": "PHONE_NUMBER",
+            "original_value": "9876543210",
+        },
+    ]
+
+    vault.allocate_placeholders(session_id, entities)
+
+    index_key = f"vaultmeta:{session_id}:keys"
+    indexed_keys = vault._redis.smembers(index_key)
+
+    assert len(indexed_keys) >= 5
+
+    vault.clear_session(session_id)
+
+    assert vault.get_mapping(session_id) == {}
+    assert vault._redis.exists(index_key) == 0
+
+    remaining_keys = (
+        list(vault._redis.scan_iter(match=f"vault:{session_id}:*"))
+        + list(vault._redis.scan_iter(match=f"vaultmeta:{session_id}:*"))
+    )
+
+    assert remaining_keys == []
+
+
+def test_store_keys_are_removed_by_clear_session(vault):
+    session_id = "store-cleanup-session"
+
+    mapping = {
+        "<EMAIL_1>": "alice@example.com",
+        "<PHONE_1>": "9876543210",
+    }
+
+    vault.store(session_id, mapping)
+
+    index_key = f"vaultmeta:{session_id}:keys"
+
+    assert vault._redis.scard(index_key) == 2
+
+    vault.clear_session(session_id)
+
+    assert vault.get_mapping(session_id) == {}
+    assert vault._redis.exists(index_key) == 0
+
 def test_session_count(vault):
     vault.store("session1", {"<EMAIL_1>": "john@example.com"})
     vault.store("session2", {"<EMAIL_1>": "jane@example.com"})
@@ -70,6 +123,86 @@ def test_invalid_ttl():
     with pytest.raises(ValueError):
         RedisVault(ttl_seconds=0)
 
+@pytest.mark.parametrize(
+    "entity_type",
+    [
+        "email_address",
+        "EMAIL-ADDRESS",
+        "EMAIL ADDRESS",
+        "123EMAIL",
+        "",
+    ],
+)
+def test_allocate_rejects_invalid_entity_type(
+    vault,
+    monkeypatch,
+    entity_type,
+):
+    monkeypatch.setattr(vault, "_hmac_secret", b"x" * 32)
+
+    entities = [
+        {
+            "entity_type": entity_type,
+            "original_value": "john@example.com",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="entity_type"):
+        vault.allocate_placeholders("invalid-type-session", entities)
+
+def test_allocate_accepts_valid_custom_entity_type(
+    vault,
+    monkeypatch,
+):
+    monkeypatch.setattr(vault, "_hmac_secret", b"x" * 32)
+
+    entities = [
+        {
+            "entity_type": "PERSON",
+            "original_value": "John",
+        }
+    ]
+
+    placeholders = vault.allocate_placeholders(
+        "custom-type-session",
+        entities,
+    )
+
+    assert placeholders == ["<PERSON_1>"]
+
+def test_entity_types_sharing_placeholder_prefix_use_unique_counters(
+    vault,
+    monkeypatch,
+):
+    monkeypatch.setattr(vault, "_hmac_secret", b"x" * 32)
+
+    entities = [
+        {
+            "entity_type": "AWS_ACCESS_KEY",
+            "original_value": "AKIAIOSFODNN7EXAMPLE",
+        },
+        {
+            "entity_type": "AWS_KEY",
+            "original_value": "another-access-key",
+        },
+    ]
+
+    placeholders = vault.allocate_placeholders(
+        "shared-prefix-session",
+        entities,
+    )
+
+    assert placeholders == [
+        "<AWS_KEY_1>",
+        "<AWS_KEY_2>",
+    ]
+
+    mapping = vault.get_mapping("shared-prefix-session")
+
+    assert mapping == {
+        "<AWS_KEY_1>": "AKIAIOSFODNN7EXAMPLE",
+        "<AWS_KEY_2>": "another-access-key",
+    }
 
 def test_invalid_placeholder(vault):
     with pytest.raises(ValueError):
@@ -141,6 +274,9 @@ def test_unmask_multiple_and_unknown_placeholders(vault):
 def test_unmask_empty_text(vault):
     assert vault.unmask_text("", "empty-session") == ""
 
+def test_unmask_empty_text_rejects_invalid_session(vault):
+    with pytest.raises(ValueError):
+        vault.unmask_text("", "")
 
 def test_independent_vault_instances_share_data(vault):
     second_vault = RedisVault(db=15, ttl_seconds=60)
@@ -240,6 +376,11 @@ def test_invalid_ttl_values(ttl):
     with pytest.raises(ValueError):
         RedisVault(ttl_seconds=ttl)
 
+def test_rejects_short_hmac_secret(monkeypatch):
+    monkeypatch.setenv("DLP_HMAC_SECRET", "short-secret")
+
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        RedisVault(db=15)
 
 def test_store_refreshes_mapping_ttl(vault):
     vault.ttl_seconds = 3

@@ -27,4 +27,6 @@ htmlcov/
 Thumbs.db
 
 # Day 7 local integration logs
-logs/
+!logs/
+logs/*
+!logs/zero_pii_audit_report.json

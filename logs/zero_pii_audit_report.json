@@ -1,0 +1,37 @@
+{
+  "audit": "Day 13 Zero-PII Upstream Verification",
+  "run_id": "d3bf8ee1835e44f2a6c34ef3836f99af",
+  "generated_at": "2026-11-21T17:23:56.176144+00:00",
+  "payload_file": "data/pii_audit_payloads.json",
+  "expected_payloads": 500,
+  "successful_proxy_requests": 500,
+  "upstream_records_appended": 500,
+  "matched_upstream_records": 500,
+  "missing_upstream_records": 0,
+  "duplicate_upstream_records": 0,
+  "unexpected_upstream_records": 0,
+  "leak_count": 0,
+  "request_failure_count": 0,
+  "entity_mismatch_count": 0,
+  "log_error_count": 0,
+  "positive_audit_pass": true,
+  "negative_test": {
+    "attempted": true,
+    "request_success": true,
+    "log_record_found": true,
+    "leak_detected": true,
+    "entity_type": "EMAIL_ADDRESS",
+    "value_sha256": "e678425f947131b7588d8cf05b73c1950b423e3656f96ba6a91ecbf65e0997a1",
+    "pass": true
+  },
+  "details": {
+    "missing_audit_ids": [],
+    "duplicate_audit_ids": [],
+    "unexpected_records": [],
+    "leaks": [],
+    "request_failures": [],
+    "entity_mismatches": [],
+    "log_errors": []
+  },
+  "overall_pass": true
+}

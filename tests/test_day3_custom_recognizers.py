@@ -166,14 +166,42 @@ def test_rejects_string_without_aws_prefix(engine):
 # AWS SECRET KEY DETECTION
 # ============================================================
 
-def test_redacts_aws_secret_key_with_context(engine):
+def test_redacts_aws_secret_with_generic_secret_context(engine):
+    secret = "A" * 40
+
     masked, entities = engine.redact(
-        "aws_secret_access_key = "
-        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        f"secret = {secret}"
     )
 
+    assert secret not in masked
     assert "<AWS_SECRET_1>" in masked
     assert any(
+        e["entity_type"] == "AWS_SECRET_KEY"
+        for e in entities
+    )
+
+
+def test_redacts_aws_secret_with_secret_key_context(engine):
+    secret = "A" * 40
+
+    masked, entities = engine.redact(
+        f"secret_key = {secret}"
+    )
+
+    assert secret not in masked
+    assert "<AWS_SECRET_1>" in masked
+    assert any(
+        e["entity_type"] == "AWS_SECRET_KEY"
+        for e in entities
+    )
+
+
+def test_does_not_detect_40_character_password_without_secret_context(engine):
+    text = "password = " + ("A" * 40)
+
+    _, entities = engine.redact(text)
+
+    assert not any(
         e["entity_type"] == "AWS_SECRET_KEY"
         for e in entities
     )
@@ -215,6 +243,61 @@ def test_rejects_plain_text_with_dots(engine):
     assert len(jwt_hits) == 0
 
 
+def test_redacts_jwe_token(engine):
+    jwe = (
+        "eyJhbGciOiJSU0E1XzU"
+        ".encryptedkey123"
+        ".iv123456"
+        ".ciphertext123"
+        ".authenticationtag123"
+    )
+
+    masked, entities = engine.redact(
+        f"Authorization: Bearer {jwe}"
+    )
+
+    assert jwe not in masked
+    assert "<JWT_1>" in masked
+    assert any(
+        e["entity_type"] == "JWT_TOKEN"
+        for e in entities
+    )
+
+
+def test_redacts_jwt_ending_with_hyphen(engine):
+    jwt = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "signature123-"
+    )
+
+    masked, entities = engine.redact(jwt)
+
+    assert jwt not in masked
+    assert "<JWT_1>" in masked
+    assert any(
+        e["entity_type"] == "JWT_TOKEN"
+        for e in entities
+    )
+
+
+def test_redacts_jwt_ending_with_underscore(engine):
+    jwt = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "signature123_"
+    )
+
+    masked, entities = engine.redact(jwt)
+
+    assert jwt not in masked
+    assert "<JWT_1>" in masked
+    assert any(
+        e["entity_type"] == "JWT_TOKEN"
+        for e in entities
+    )
+
+
 # ============================================================
 # REGISTRY AND INTEGRATION
 # ============================================================
@@ -229,6 +312,7 @@ def test_all_supported_entities_are_registered(engine):
         "AWS_SECRET_KEY",
         "JWT_TOKEN",
         "CREDIT_CARD",
+        "US_SSN",
     }
 
     assert set(SUPPORTED_ENTITIES) == expected

@@ -137,7 +137,7 @@ class AWSSecretKeyRecognizer(PatternRecognizer):
             normalized_context = re.sub(r"[^a-z0-9]+", " ", nearby_text)
             context_words = set(normalized_context.split())
 
-            if "aws" in context_words and "secret" in context_words:
+            if "secret" in context_words:
                 filtered_results.append(result)
 
         return filtered_results
@@ -151,7 +151,18 @@ class JWTRecognizer(PatternRecognizer):
     PATTERNS = [
         Pattern(
             name="jwt_pattern",
-            regex=r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
+            regex=(
+                r"(?<![A-Za-z0-9_-])"
+                r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"
+                r"\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"
+                r"\.[A-Za-z0-9_-]+"
+                r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
+                r"|"
+                r"(?<![A-Za-z0-9_-])"
+                r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+                r"\.[A-Za-z0-9_-]+"
+                r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
+            ),
             score=0.9,
         )
     ]

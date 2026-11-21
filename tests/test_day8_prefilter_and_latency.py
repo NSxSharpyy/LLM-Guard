@@ -127,6 +127,7 @@ def test_supported_entity_catalog_is_unchanged():
         "AWS_ACCESS_KEY",
         "AWS_SECRET_KEY",
         "JWT_TOKEN",
+        "US_SSN",
     }
 
     assert set(SUPPORTED_ENTITIES) == expected

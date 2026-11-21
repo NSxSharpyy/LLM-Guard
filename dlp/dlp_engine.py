@@ -20,6 +20,7 @@ STANDARD_ENTITIES = [
     "EMAIL_ADDRESS",
     "PHONE_NUMBER",
     "CREDIT_CARD",
+    "US_SSN",
 ]
 
 # Day 2 + Day 3 supported entities
