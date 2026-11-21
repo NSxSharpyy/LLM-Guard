@@ -1,0 +1,46 @@
+
+services:
+  mock-llm:
+    build: .
+    container_name: llm_guard_mock_upstream
+    command: uvicorn src.mock.mock_llm:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    networks:
+      - guard_net
+
+  proxy:
+    build: .
+    container_name: llm_guard_reverse_proxy
+    command: uvicorn src.proxy.proxy_server:app --host 0.0.0.0 --port 8000
+    environment:
+      - UPSTREAM_BASE_URL=http://mock-llm:8001
+      - SIEM_LOG_PATH=/app/logs/security_events.jsonl
+    ports:
+      - "8000:8000"
+    volumes:
+      - llm_guard_logs:/app/logs:rw
+    depends_on:
+      - mock-llm
+    networks:
+      - guard_net
+
+  soc-dashboard:
+    image: python:3.12-slim
+    container_name: llm_guard_soc_dashboard
+    working_dir: /app
+    command: python -c "import time; print('SOC Dashboard Tailing SIEM Logs...'); [print(line.strip()) for line in open('/app/logs/security_events.jsonl')]"
+    volumes:
+      - llm_guard_logs:/app/logs:ro
+    depends_on:
+      - proxy
+    networks:
+      - guard_net
+
+volumes:
+  llm_guard_logs:
+    name: llm_guard_shared_logs
+
+networks:
+  guard_net:
+    driver: bridge
