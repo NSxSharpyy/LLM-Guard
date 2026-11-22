@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-11-09T15:00:00Z",
+  "trace_id": "req-001",
+  "client_ip": "192.168.1.100",
+  "user_id": "user-101",
+  "user_role": "analyst",
+  "action": "BLOCK",
+  "rule_id": "PROMPT_INJECTION_001",
+  "ml_score": 0.96,
+  "latency_ms": 12.5
+}

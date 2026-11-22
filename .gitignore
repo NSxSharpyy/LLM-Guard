@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 env/
@@ -13,10 +13,15 @@ env/
 .env.*
 !.env.example
 
-# Testing
+# Testing and coverage
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Runtime logs and process files
+*.log
+*.pid
+logs/*.jsonl
 
 # IDE
 .vscode/

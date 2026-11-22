@@ -1,46 +1,140 @@
-
 services:
   mock-llm:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-guard-mock:member6
     container_name: llm_guard_mock_upstream
-    command: uvicorn src.mock.mock_llm:app --host 0.0.0.0 --port 8001
-    ports:
-      - "8001:8001"
+    command:
+      - uvicorn
+      - src.mock.mock_llm:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    expose:
+      - "8001"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
-      - guard_net
+      - llm_guard_network
 
   proxy:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-guard-proxy:member6
     container_name: llm_guard_reverse_proxy
-    command: uvicorn src.proxy.proxy_server:app --host 0.0.0.0 --port 8000
+    command:
+      - uvicorn
+      - src.proxy.proxy_server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
     environment:
-      - UPSTREAM_BASE_URL=http://mock-llm:8001
-      - SIEM_LOG_PATH=/app/logs/security_events.jsonl
+      UPSTREAM_BASE_URL: http://mock-llm:8001
+      SIEM_LOG_PATH: /app/logs/security_events.jsonl
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${PROXY_HOST_PORT:-18000}:8000"
     volumes:
-      - llm_guard_logs:/app/logs:rw
+      - llm_guard_logs:/app/logs
+    restart: unless-stopped
     depends_on:
-      - mock-llm
+      mock-llm:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
-      - guard_net
+      - llm_guard_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: llm-guard-redis
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - llm_guard_redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - llm_guard_network
 
   soc-dashboard:
-    image: python:3.12-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: llm-guard-dashboard:member6
     container_name: llm_guard_soc_dashboard
-    working_dir: /app
-    command: python -c "import time; print('SOC Dashboard Tailing SIEM Logs...'); [print(line.strip()) for line in open('/app/logs/security_events.jsonl')]"
+    environment:
+      PROXY_HEALTH_URL: http://proxy:8000/healthz
+      MOCK_LLM_HEALTH_URL: http://mock-llm:8001/healthz
+      REDIS_HEALTH_HOST: redis
+      REDIS_HEALTH_PORT: "6379"
+      LATENCY_METRICS_PATH: /app/logs/latency_metrics.jsonl
+      DAY14_BATCH_PROGRESS_PATH: /app/day14/batch_progress.json
+    ports:
+      - "127.0.0.1:${DASHBOARD_HOST_PORT:-8501}:8501"
     volumes:
       - llm_guard_logs:/app/logs:ro
+      - type: bind
+        source: ${DAY14_STATE_DIR:-/home/sai/.local/state/llm-guard-day14}
+        target: /app/day14
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: unless-stopped
     depends_on:
-      - proxy
+      proxy:
+        condition: service_healthy
+      mock-llm:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
-      - guard_net
+      - llm_guard_network
 
 volumes:
   llm_guard_logs:
     name: llm_guard_shared_logs
+  llm_guard_redis_data:
+    name: llm-guard-redis-data
 
 networks:
-  guard_net:
+  llm_guard_network:
+    name: llm-guard-network
     driver: bridge

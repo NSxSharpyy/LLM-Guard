@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from src.security.pii_guard import inspect_and_sanitize_payload
 from src.security.prompt_guard import inspect_chat_payload
 from src.security.rate_limiter import SlidingWindowRateLimiter
 from src.security.siem_logger import SIEMEventLogger, generate_trace_id
+from src.security.latency_logger import LatencyMetricsLogger
 
 UPSTREAM_BASE_URL = os.getenv("UPSTREAM_BASE_URL", "http://127.0.0.1:8001")
 
@@ -22,9 +24,33 @@ class ProxyState:
     client: httpx.AsyncClient | None = None
     rate_limiter: SlidingWindowRateLimiter = SlidingWindowRateLimiter(window_seconds=60.0)
     siem_logger: SIEMEventLogger = SIEMEventLogger()
+    latency_logger: LatencyMetricsLogger = LatencyMetricsLogger()
 
 
 state = ProxyState()
+
+
+async def _log_latency_safely(
+    *,
+    trace_id: str,
+    firewall_inspection_ms: float,
+    upstream_latency_ms: float | None,
+    upstream_measurement: str,
+) -> None:
+    """Prevent telemetry write failures from breaking proxy requests."""
+    try:
+        await state.latency_logger.log_metric(
+            trace_id=trace_id,
+            firewall_inspection_ms=firewall_inspection_ms,
+            upstream_latency_ms=upstream_latency_ms,
+            upstream_measurement=upstream_measurement,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to write latency metric for trace_id=%s", trace_id
+        )
+
+
 
 
 def _extract_client_ip(request: Request) -> str:
@@ -88,19 +114,35 @@ async def healthcheck() -> dict[str, object]:
 
 async def stream_upstream_bytes(
     upstream_resp: httpx.Response,
+    *,
+    trace_id: str,
+    firewall_inspection_ms: float,
+    t_upstream_start: float,
 ) -> AsyncGenerator[bytes, None]:
-    """
-    Zero-buffer async generator yielding raw SSE chunks directly as they arrive
-    from the upstream LLM without accumulating the full response in RAM.
-    """
+    """Forward SSE chunks and record duration when stream handling ends."""
+    completed = False
     try:
         async for chunk in upstream_resp.aiter_raw():
             if chunk:
                 yield chunk
+        completed = True
     except (ClientDisconnect, GeneratorExit):
         pass
     finally:
-        await upstream_resp.aclose()
+        try:
+            await upstream_resp.aclose()
+        finally:
+            upstream_latency_ms = (
+                time.perf_counter() - t_upstream_start
+            ) * 1000.0
+            await _log_latency_safely(
+                trace_id=trace_id,
+                firewall_inspection_ms=firewall_inspection_ms,
+                upstream_latency_ms=upstream_latency_ms,
+                upstream_measurement=(
+                    "stream_full_response" if completed else "stream_interrupted"
+                ),
+            )
 
 
 @app.post("/v1/chat/completions")
@@ -115,6 +157,12 @@ async def proxy_chat_completions(request: Request) -> Response:
         tenant = authenticate_request(request)
     except HTTPException as auth_exc:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await _log_latency_safely(
+            trace_id=trace_id,
+            firewall_inspection_ms=latency_ms,
+            upstream_latency_ms=None,
+            upstream_measurement="not_forwarded",
+        )
         exc_headers = dict(auth_exc.headers or {})
         rule_id = exc_headers.pop(
             "X-Guard-Rule-Id",
@@ -146,6 +194,12 @@ async def proxy_chat_completions(request: Request) -> Response:
         )
     except HTTPException as rl_exc:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await _log_latency_safely(
+            trace_id=trace_id,
+            firewall_inspection_ms=latency_ms,
+            upstream_latency_ms=None,
+            upstream_measurement="not_forwarded",
+        )
         exc_headers = dict(rl_exc.headers or {})
         exc_headers["X-Trace-Id"] = trace_id
         exc_headers["X-Tenant-Id"] = tenant.tenant_id
@@ -183,6 +237,12 @@ async def proxy_chat_completions(request: Request) -> Response:
             is_stream = bool(parsed_body.get("stream", False))
     except json.JSONDecodeError:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await _log_latency_safely(
+            trace_id=trace_id,
+            firewall_inspection_ms=latency_ms,
+            upstream_latency_ms=None,
+            upstream_measurement="not_forwarded",
+        )
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -203,6 +263,12 @@ async def proxy_chat_completions(request: Request) -> Response:
     guard_verdict = inspect_chat_payload(parsed_body)
     if guard_verdict.blocked:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await _log_latency_safely(
+            trace_id=trace_id,
+            firewall_inspection_ms=latency_ms,
+            upstream_latency_ms=None,
+            upstream_measurement="not_forwarded",
+        )
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -231,6 +297,12 @@ async def proxy_chat_completions(request: Request) -> Response:
     dlp_verdict = inspect_and_sanitize_payload(parsed_body, raw_body)
     if dlp_verdict.blocked:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await _log_latency_safely(
+            trace_id=trace_id,
+            firewall_inspection_ms=latency_ms,
+            upstream_latency_ms=None,
+            upstream_measurement="not_forwarded",
+        )
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -308,6 +380,9 @@ async def proxy_chat_completions(request: Request) -> Response:
             )
 
         ttft_ms = (time.perf_counter() - t_upstream_start) * 1000.0
+        firewall_inspection_ms = (
+            t_upstream_start - t_req_start
+        ) * 1000.0
         total_guard_ms = (time.perf_counter() - t_req_start) * 1000.0
 
         await state.siem_logger.log_event(
@@ -330,7 +405,12 @@ async def proxy_chat_completions(request: Request) -> Response:
         }
 
         return StreamingResponse(
-            stream_upstream_bytes(upstream_resp),
+            stream_upstream_bytes(
+                upstream_resp,
+                trace_id=trace_id,
+                firewall_inspection_ms=firewall_inspection_ms,
+                t_upstream_start=t_upstream_start,
+            ),
             status_code=upstream_resp.status_code,
             headers=stream_headers,
             media_type="text/event-stream",
@@ -356,6 +436,16 @@ async def proxy_chat_completions(request: Request) -> Response:
 
     transit_latency_ms = (time.perf_counter() - t_upstream_start) * 1000.0
     total_latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+    firewall_inspection_ms = (
+        t_upstream_start - t_req_start
+    ) * 1000.0
+
+    await _log_latency_safely(
+        trace_id=trace_id,
+        firewall_inspection_ms=firewall_inspection_ms,
+        upstream_latency_ms=transit_latency_ms,
+        upstream_measurement="unary_full_response",
+    )
 
     await state.siem_logger.log_event(
         trace_id=trace_id,
