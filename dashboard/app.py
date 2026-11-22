@@ -24,6 +24,7 @@ from dashboard.event_reader import JsonlEventTailReader
 from dashboard.latency_reader import JsonlLatencyTailReader
 from dashboard.event_filters import filter_events
 from dashboard.alerts import HighSeverityAlertTracker
+from dashboard.batch_reader import BatchProgressReader
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
@@ -36,6 +37,13 @@ LATENCY_LOG_PATH = Path(
     )
 )
 
+
+BATCH_PROGRESS_PATH = Path(
+    os.getenv(
+        "DAY14_BATCH_PROGRESS_PATH",
+        str(Path.home() / ".local" / "state" / "llm-guard-day14" / "batch_progress.json"),
+    )
+)
 
 PROXY_HEALTH_URL = "http://127.0.0.1:8000/healthz"
 MOCK_LLM_HEALTH_URL = "http://127.0.0.1:8101/healthz"
@@ -292,6 +300,11 @@ if "latency_reader" not in st.session_state:
         max_samples=500,
     )
 
+if "day14_batch_reader" not in st.session_state:
+    st.session_state.day14_batch_reader = BatchProgressReader(
+        path=BATCH_PROGRESS_PATH,
+    )
+
 
 if "alert_tracker" not in st.session_state:
     st.session_state.alert_tracker = HighSeverityAlertTracker()
@@ -308,6 +321,11 @@ def poll_security_events():
 def poll_latency_metrics():
     """Poll the independent proxy latency JSONL sidecar."""
     return st.session_state.latency_reader.poll()
+
+
+def poll_day14_batch():
+    """Poll the separate Day 14 batch progress file."""
+    return st.session_state.day14_batch_reader.poll()
 
 
 filter_initial_snapshot = poll_security_events()
@@ -525,11 +543,103 @@ def render_latency_metrics(snapshot):
     )
 
 
+
+def render_day14_batch_panel(snapshot):
+    """Render isolated Day 14 evaluation progress."""
+    st.subheader("Day 14 — Attack Batch Evaluation")
+
+    if not snapshot.available or snapshot.data is None:
+        st.info(snapshot.message)
+        return
+
+    data = snapshot.data
+
+    st.caption(
+        f"Batch: `{data['batch_id']}` · "
+        f"Source: {data['source'].upper()} · "
+        f"Status: **{data['status'].upper()}** · "
+        f"Updated: {data['updated_at']}"
+    )
+
+    if data["source"] == "synthetic":
+        st.warning(
+            "Synthetic evaluation only. These results are not "
+            "M5's real-world Red Team Simulator dataset."
+        )
+
+    st.progress(
+        min(1.0, max(0.0, data["completion_pct"] / 100.0)),
+        text=(
+            f"{data['completed_total']:,} / "
+            f"{data['expected_total']:,} requests completed "
+            f"({data['completion_pct']:.1f}%)"
+        ),
+    )
+
+    def metric_value(value, suffix=""):
+        return f"{value:.2f}{suffix}" if value is not None else "—"
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
+        "Attack Detection",
+        metric_value(data["attack_detection_rate_pct"], "%"),
+    )
+    col2.metric(
+        "Correct Rule Match",
+        metric_value(data["attack_rule_match_rate_pct"], "%"),
+    )
+    col3.metric(
+        "Benign False-Positive Rate",
+        metric_value(data["benign_false_positive_rate_pct"], "%"),
+    )
+    col4.metric("Evaluation Errors", data["error_count"])
+
+    col5, col6, col7, col8 = st.columns(4)
+
+    col5.metric("Requests Completed", f"{data['completed_total']:,}")
+    col6.metric("Throughput", f"{data['requests_per_second']:.2f} req/s")
+    col7.metric("Average Latency", metric_value(data["latency_avg_ms"], " ms"))
+    col8.metric("P95 Latency", metric_value(data["latency_p95_ms"], " ms"))
+
+    category_rows = [
+        {
+            "Category": category,
+            "Completed": stats["completed"],
+            "Blocked": stats["blocked"],
+            "Correct Rule": stats["correct_rule_matches"],
+            "Missed": stats["missed"],
+            "Errors": stats["errors"],
+        }
+        for category, stats in data["category_stats"].items()
+    ]
+
+    if category_rows:
+        st.markdown("#### Attack Category Breakdown")
+        st.dataframe(
+            category_rows,
+            hide_index=True,
+            width="stretch",
+        )
+
+    st.caption(
+        f"Attacks: {data['completed_attacks']:,}/"
+        f"{data['expected_attacks']:,} · "
+        f"Benign controls: {data['completed_benign']:,}/"
+        f"{data['expected_benign']:,} · "
+        f"Wrong-rule blocks: {data['wrong_rule_blocks']:,} · "
+        f"Missed attacks: {data['attack_missed']:,}"
+    )
+
+
 @st.fragment(run_every="2s")
 def render_live_telemetry():
     """Poll the log and refresh telemetry metrics and the event table."""
     snapshot = poll_security_events()
     latency_snapshot = poll_latency_metrics()
+    batch_snapshot = poll_day14_batch()
+
+    render_day14_batch_panel(batch_snapshot)
 
     alert_tracker = st.session_state.alert_tracker
 
