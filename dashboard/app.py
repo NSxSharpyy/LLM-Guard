@@ -26,6 +26,7 @@ from dashboard.alerts import HighSeverityAlertTracker
 from dashboard.batch_reader import BatchProgressReader
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
+from dashboard.rbac_view import render_rbac_policies
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
 
 
@@ -240,6 +241,11 @@ st.set_page_config(
 st.title("🛡️ LLM-Guard SOC Dashboard")
 st.caption("AI Security Posture Management | Security Operations Center")
 
+overview_tab, policies_tab = st.tabs([
+    "Live Security Overview",
+    "RBAC & Policies",
+])
+
 st.sidebar.title("LLM-Guard")
 st.sidebar.caption("Security Operations Dashboard")
 st.sidebar.markdown("---")
@@ -249,7 +255,6 @@ st.sidebar.info(
     "The dashboard refreshes this panel every two seconds."
 )
 
-st.header("Security Overview")
 
 
 # Keep one reader per Streamlit browser session so file offsets and
@@ -836,27 +841,32 @@ def render_live_telemetry():
         )
 
 
-render_live_telemetry()
+with overview_tab:
+    st.header("Security Overview")
+    render_live_telemetry()
 
-st.divider()
+    st.divider()
 
-st.header("System Health")
+    st.header("System Health")
 
-proxy_state, proxy_detail = check_proxy()
-redis_state, redis_detail = check_redis()
-mock_state, mock_detail = check_mock_llm()
+    proxy_state, proxy_detail = check_proxy()
+    redis_state, redis_detail = check_redis()
+    mock_state, mock_detail = check_mock_llm()
 
-health_col1, health_col2, health_col3 = st.columns(3)
+    health_col1, health_col2, health_col3 = st.columns(3)
 
-render_service(health_col1, "Proxy", proxy_state, proxy_detail)
-render_service(health_col2, "Redis", redis_state, redis_detail)
-render_service(health_col3, "Mock LLM", mock_state, mock_detail)
+    render_service(health_col1, "Proxy", proxy_state, proxy_detail)
+    render_service(health_col2, "Redis", redis_state, redis_detail)
+    render_service(health_col3, "Mock LLM", mock_state, mock_detail)
 
-st.divider()
+    st.divider()
 
-checked_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    checked_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
-st.caption(f"Health checks last performed: {checked_at}")
-st.caption(
-    "LLM-Guard | Member 6 — DevOps, SIEM Logging and SOC Dashboard"
-)
+    st.caption(f"Health checks last performed: {checked_at}")
+    st.caption(
+        "LLM-Guard | Member 6 — DevOps, SIEM Logging and SOC Dashboard"
+    )
+
+with policies_tab:
+    render_rbac_policies()
