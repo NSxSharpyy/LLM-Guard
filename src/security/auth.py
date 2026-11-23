@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import hashlib
 import hmac
 from dataclasses import dataclass
-from fastapi import HTTPException, Request
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import Request
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,7 @@ def authenticate_request(request: Request) -> TenantContext:
     Validates the Authorization: Bearer <API_KEY> header using constant-time
     digest comparison to prevent timing side-channel attacks.
     """
+    from fastapi import HTTPException
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise HTTPException(

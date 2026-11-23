@@ -1,58 +1,50 @@
-from dashboard.rbac_view import (
-    build_policy_rows,
-    build_role_matrix,
-)
+from dashboard.rbac_view import build_role_rows
+from src.security.auth import DEFAULT_API_KEYS
 
 
-def test_role_matrix_contains_three_roles():
-    rows = build_role_matrix()
+def test_dashboard_displays_actual_backend_roles():
+    rows = build_role_rows()
 
-    assert len(rows) == 3
-    assert {row["Role"] for row in rows} == {
-        "Administrator",
-        "Security Analyst",
-        "Viewer",
+    expected = {
+        (tenant.user_role, tenant.rpm_limit)
+        for tenant in DEFAULT_API_KEYS.values()
+    }
+
+    actual = {
+        (row["Current Role"], row["Requests Per Minute (RPM)"])
+        for row in rows
+    }
+
+    assert actual == expected
+
+
+def test_current_default_roles_are_present():
+    roles = {row["Current Role"] for row in build_role_rows()}
+
+    assert roles == {"free", "pro", "enterprise"}
+
+
+def test_request_limits_match_backend_configuration():
+    limits = {
+        row["Current Role"]: row["Requests Per Minute (RPM)"]
+        for row in build_role_rows()
+    }
+
+    assert limits == {
+        "free": 5,
+        "pro": 60,
+        "enterprise": 10000,
     }
 
 
-def test_administrator_can_manage_policies():
-    rows = build_role_matrix()
-    admin = next(row for row in rows if row["Role"] == "Administrator")
-
-    assert admin["Manage policies"] is True
-    assert admin["Manage roles"] is True
+def test_token_limits_are_not_invented():
+    for row in build_role_rows():
+        assert row["Assigned Token Limit"] == "Not configured"
 
 
-def test_analyst_cannot_manage_policies():
-    rows = build_role_matrix()
-    analyst = next(row for row in rows if row["Role"] == "Security Analyst")
-
-    assert analyst["Dismiss alerts"] is True
-    assert analyst["Manage policies"] is False
-    assert analyst["Manage roles"] is False
-
-
-def test_viewer_has_read_only_permissions():
-    rows = build_role_matrix()
-    viewer = next(row for row in rows if row["Role"] == "Viewer")
-
-    assert viewer["View dashboard"] is True
-    assert viewer["View security events"] is True
-    assert viewer["Dismiss alerts"] is False
-    assert viewer["Manage policies"] is False
-
-
-def test_policy_table_contains_eight_controls():
-    assert len(build_policy_rows()) == 8
-
-
-def test_policy_inventory_does_not_claim_runtime_configuration():
-    for policy in build_policy_rows():
-        assert policy["Runtime configurable"] == "No"
-        assert policy["Implementation"] == "Implemented in code"
-
-
-def test_policy_inventory_contains_sources():
-    for policy in build_policy_rows():
-        assert policy["Policy ID"]
-        assert policy["Source"].startswith("src/security/")
+def test_model_access_is_not_misrepresented():
+    for row in build_role_rows():
+        assert (
+            row["Model Access Permissions"]
+            == "No role-specific model allowlist configured"
+        )
