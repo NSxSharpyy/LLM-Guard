@@ -10,6 +10,7 @@ import threading
 from dlp.dlp_engine import DLPEngine
 from dlp.redis_vault import RedisVault
 from dlp.vault import PLACEHOLDER_PATTERN
+from dlp.output_scanner import OutputScanner
 
 class DLPInterceptor:
     """Public interface for reversible PII and secret masking."""
@@ -31,6 +32,11 @@ class DLPInterceptor:
             db=redis_db,
             password=redis_password,
             ttl_seconds=ttl_seconds,
+        )
+        # Initialize the output response scanner.
+        self._output_scanner = OutputScanner(
+            self._vault,
+            self._engine,
         )
 
         # This lock coordinates threads within this process.
@@ -200,6 +206,20 @@ class DLPInterceptor:
         """Restore original values using the session vault."""
         self._validate_session_id(session_id)
         return self._vault.unmask_text(text, session_id)
+
+    def scan_output(self, final_response: str, session_id: str):
+        """Scan a final LLM response for unexpected PII.
+
+        This is an explicit opt-in operation. It does not modify
+        or block the response.
+        """
+        self._validate_session_id(session_id)
+
+        with self._lock:
+            return self._output_scanner.scan(
+                final_response,
+                session_id,
+            )
 
     def end_session(self, session_id: str) -> None:
         """Clear all data associated with a session."""
