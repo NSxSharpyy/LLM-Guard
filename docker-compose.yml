@@ -44,6 +44,7 @@ services:
     environment:
       UPSTREAM_BASE_URL: http://mock-llm:8001
       SIEM_LOG_PATH: /app/logs/security_events.jsonl
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "127.0.0.1:${PROXY_HOST_PORT:-18000}:8000"
     volumes:
@@ -95,6 +96,7 @@ services:
       MOCK_LLM_HEALTH_URL: http://mock-llm:8001/healthz
       REDIS_HEALTH_HOST: redis
       REDIS_HEALTH_PORT: "6379"
+      REDIS_URL: redis://redis:6379/0
       LATENCY_METRICS_PATH: /app/logs/latency_metrics.jsonl
       DAY14_BATCH_PROGRESS_PATH: /app/day14/batch_progress.json
     ports:

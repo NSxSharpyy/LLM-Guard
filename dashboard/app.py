@@ -27,6 +27,7 @@ from dashboard.batch_reader import BatchProgressReader
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
 from dashboard.rbac_view import render_rbac_policies
+from dashboard.api_key_view import render_api_key_management
 from telemetry.telemetry_logger import DEFAULT_LOG_PATH
 
 
@@ -241,9 +242,10 @@ st.set_page_config(
 st.title("🛡️ LLM-Guard SOC Dashboard")
 st.caption("AI Security Posture Management | Security Operations Center")
 
-overview_tab, policies_tab = st.tabs([
+overview_tab, policies_tab, api_keys_tab = st.tabs([
     "Live Security Overview",
     "RBAC & Policies",
+    "Client API Keys",
 ])
 
 st.sidebar.title("LLM-Guard")
@@ -870,3 +872,6 @@ with overview_tab:
 
 with policies_tab:
     render_rbac_policies()
+
+with api_keys_tab:
+    render_api_key_management()

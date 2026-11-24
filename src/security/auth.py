@@ -75,9 +75,25 @@ def authenticate_request(request: Request) -> TenantContext:
     raw_token = parts[1].strip()
     incoming_hash = _hash_key(raw_token)
 
+    # Preserve the existing built-in API keys.
     for stored_hash, tenant_ctx in DEFAULT_API_KEYS.items():
         if hmac.compare_digest(incoming_hash, stored_hash):
             return tenant_ctx
+
+    # Resolve dynamically generated keys through the shared Redis registry.
+    try:
+        from redis.exceptions import RedisError
+        from src.security.api_key_store import lookup_client_api_key
+
+        tenant_ctx = lookup_client_api_key(raw_token)
+    except RedisError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="API key registry is temporarily unavailable",
+        ) from exc
+
+    if tenant_ctx is not None:
+        return tenant_ctx
 
     raise HTTPException(
         status_code=403,
