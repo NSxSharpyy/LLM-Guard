@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
+from src.proxy.metrics import GuardRuntimeMetrics
 from src.security.auth import TenantContext, authenticate_request
 from src.security.pii_guard import inspect_and_sanitize_payload
 from src.security.prompt_guard import inspect_chat_payload
@@ -22,6 +23,7 @@ class ProxyState:
     client: httpx.AsyncClient | None = None
     rate_limiter: SlidingWindowRateLimiter = SlidingWindowRateLimiter(window_seconds=60.0)
     siem_logger: SIEMEventLogger = SIEMEventLogger()
+    metrics: GuardRuntimeMetrics = GuardRuntimeMetrics()
 
 
 state = ProxyState()
@@ -86,6 +88,18 @@ async def healthcheck() -> dict[str, object]:
     }
 
 
+@app.get("/v1/guard/stats")
+async def guard_stats(request: Request) -> dict[str, object]:
+    """Authenticated runtime guardrail decision counters."""
+    tenant = authenticate_request(request)
+    snap = await state.metrics.snapshot()
+    return {
+        "tenant_id": tenant.tenant_id,
+        "version": "1.4.0",
+        "metrics": snap,
+    }
+
+
 async def stream_upstream_bytes(
     upstream_resp: httpx.Response,
 ) -> AsyncGenerator[bytes, None]:
@@ -122,6 +136,7 @@ async def proxy_chat_completions(request: Request) -> Response:
         )
         exc_headers["X-Trace-Id"] = trace_id
 
+        await state.metrics.record_block("auth")
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -150,6 +165,7 @@ async def proxy_chat_completions(request: Request) -> Response:
         exc_headers["X-Trace-Id"] = trace_id
         exc_headers["X-Tenant-Id"] = tenant.tenant_id
 
+        await state.metrics.record_block("rate_limit")
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -183,6 +199,7 @@ async def proxy_chat_completions(request: Request) -> Response:
             is_stream = bool(parsed_body.get("stream", False))
     except json.JSONDecodeError:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await state.metrics.record_block("malformed_json")
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -203,6 +220,7 @@ async def proxy_chat_completions(request: Request) -> Response:
     guard_verdict = inspect_chat_payload(parsed_body)
     if guard_verdict.blocked:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await state.metrics.record_block("prompt_guard")
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -231,6 +249,7 @@ async def proxy_chat_completions(request: Request) -> Response:
     dlp_verdict = inspect_and_sanitize_payload(parsed_body, raw_body)
     if dlp_verdict.blocked:
         latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await state.metrics.record_block("dlp_secret")
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -310,6 +329,7 @@ async def proxy_chat_completions(request: Request) -> Response:
         ttft_ms = (time.perf_counter() - t_upstream_start) * 1000.0
         total_guard_ms = (time.perf_counter() - t_req_start) * 1000.0
 
+        await state.metrics.record_allow(pii_redacted=dlp_verdict.redacted)
         await state.siem_logger.log_event(
             trace_id=trace_id,
             client_ip=client_ip,
@@ -357,6 +377,7 @@ async def proxy_chat_completions(request: Request) -> Response:
     transit_latency_ms = (time.perf_counter() - t_upstream_start) * 1000.0
     total_latency_ms = (time.perf_counter() - t_req_start) * 1000.0
 
+    await state.metrics.record_allow(pii_redacted=dlp_verdict.redacted)
     await state.siem_logger.log_event(
         trace_id=trace_id,
         client_ip=client_ip,
