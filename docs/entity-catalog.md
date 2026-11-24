@@ -110,13 +110,13 @@ The custom entity catalog supports the identification of sensitive personal data
 
 **Important limitation:** These recognizers provide detection and redaction capabilities. Their implementation alone does not establish legal or regulatory compliance. Detection accuracy also depends on the patterns, context, and input format.
 
-## 4. Planned Custom Entities — Day 16
+## 4. Implemented Custom Entities — Day 16
 
 | Entity | Description | Status |
 |---|---|---|
-| INTERNAL_IPV4 | Internal IPv4 addresses | Planned |
-| DATABASE_CONNECTION_STRING | Database connection strings | Planned |
-| PRIVATE_KEY | Private SSH/RSA keys | Planned |
+| INTERNAL_IPV4 | Internal IPv4 addresses | Implemented |
+| DB_CONNECTION_STRING | Database connection strings | Implemented |
+| PRIVATE_KEY | Private SSH/RSA keys | Implemented |
 
 ## 5. Future Detection Capability
 

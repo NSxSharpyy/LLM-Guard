@@ -122,12 +122,15 @@ def test_supported_entity_catalog_is_unchanged():
         "EMAIL_ADDRESS",
         "PHONE_NUMBER",
         "CREDIT_CARD",
+        "US_SSN",
         "AADHAAR_CARD",
         "PAN_CARD",
         "AWS_ACCESS_KEY",
         "AWS_SECRET_KEY",
         "JWT_TOKEN",
-        "US_SSN",
+        "INTERNAL_IPV4",
+        "DB_CONNECTION_STRING",
+        "PRIVATE_KEY",
     }
 
     assert set(SUPPORTED_ENTITIES) == expected

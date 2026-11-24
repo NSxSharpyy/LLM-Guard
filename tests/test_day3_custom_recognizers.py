@@ -313,10 +313,12 @@ def test_all_supported_entities_are_registered(engine):
         "JWT_TOKEN",
         "CREDIT_CARD",
         "US_SSN",
+        "INTERNAL_IPV4",
+        "DB_CONNECTION_STRING",
+        "PRIVATE_KEY",
     }
 
     assert set(SUPPORTED_ENTITIES) == expected
-
 
 def test_redacts_multiple_custom_entities(engine):
     text = (

@@ -14,6 +14,8 @@ _HAS_AT_SIGN = re.compile(r"@")
 _HAS_AWS_PREFIX = re.compile(r"\b(?:AKIA|ASIA)", re.IGNORECASE)
 _HAS_JWT_PREFIX = re.compile(r"\beyJ", re.IGNORECASE)
 _HAS_KEY_SYMBOLS = re.compile(r"[+/=]")
+_HAS_CONNECTION_SCHEME = re.compile(r"://")
+_HAS_PEM_MARKER = re.compile(r"-----BEGIN")
 
 # AWS secret recognizer requires AWS and secret context.
 _HAS_AWS_SECRET_CONTEXT = re.compile(
@@ -41,5 +43,7 @@ def might_contain_pii(text: str) -> bool:
             _HAS_JWT_PREFIX,
             _HAS_KEY_SYMBOLS,
             _HAS_AWS_SECRET_CONTEXT,
+            _HAS_CONNECTION_SCHEME,
+            _HAS_PEM_MARKER,
         )
     )

@@ -10,6 +10,7 @@ Supported custom entities:
 """
 
 import re
+import ipaddress
 
 from presidio_analyzer import Pattern, PatternRecognizer
 
@@ -82,7 +83,7 @@ class AWSAccessKeyRecognizer(PatternRecognizer):
         Pattern(
             name="aws_access_key_pattern",
             regex=r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
-            score=0.9,
+            score=1.0,
         )
     ]
 
@@ -177,6 +178,121 @@ class JWTRecognizer(PatternRecognizer):
 
 
 # ============================================================
+# 6. INTERNAL IPv4 RECOGNIZER
+# ============================================================
+
+class InternalIPv4Recognizer(PatternRecognizer):
+    """Detect RFC1918 private IPv4 addresses only."""
+
+    PRIVATE_NETWORKS = [
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+    ]
+
+    PATTERNS = [
+        Pattern(
+            name="internal_ipv4_pattern",
+            regex=r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",
+            score=0.6,
+        )
+    ]
+
+    def __init__(self):
+        super().__init__(
+            supported_entity="INTERNAL_IPV4",
+            patterns=self.PATTERNS,
+            supported_language="en",
+            context=["internal", "private", "server", "host", "ip"],
+        )
+
+    def validate_result(self, pattern_text: str) -> bool:
+        """Accept only valid addresses inside RFC1918 networks."""
+
+        try:
+            address = ipaddress.ip_address(pattern_text)
+        except ValueError:
+            return False
+
+        if address.version != 4:
+            return False
+
+        return any(
+            address in network
+            for network in self.PRIVATE_NETWORKS
+        )
+
+
+# ============================================================
+# 7. DATABASE CONNECTION STRING RECOGNIZER
+# ============================================================
+
+class DBConnectionStringRecognizer(PatternRecognizer):
+    """Detect database and message-broker connection strings."""
+
+    PATTERNS = [
+        Pattern(
+            name="db_connection_string_pattern",
+            regex=(
+                r"(?i)\b(?:postgres(?:ql)?|mongodb(?:\+srv)?|"
+                r"mysql|redis|amqp)://[^\s\"'<>]+"
+            ),
+            score=0.9,
+        )
+    ]
+
+    def __init__(self):
+        super().__init__(
+            supported_entity="DB_CONNECTION_STRING",
+            patterns=self.PATTERNS,
+            supported_language="en",
+            context=[
+                "database",
+                "db",
+                "connection",
+                "connection_string",
+                "mongodb",
+                "postgres",
+                "mysql",
+                "redis",
+            ],
+        )
+
+
+# ============================================================
+# 8. PRIVATE KEY RECOGNIZER
+# ============================================================
+
+class PrivateKeyRecognizer(PatternRecognizer):
+    """Detect complete PEM private-key blocks."""
+
+    PATTERNS = [
+        Pattern(
+            name="private_key_pattern",
+            regex=(
+                r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----"
+                r"[\s\S]+?"
+                r"-----END \1-----"
+            ),
+            score=1.0,
+        )
+    ]
+
+    def __init__(self):
+        super().__init__(
+            supported_entity="PRIVATE_KEY",
+            patterns=self.PATTERNS,
+            supported_language="en",
+            context=[
+                "private key",
+                "rsa",
+                "ssh",
+                "certificate",
+                "pem",
+            ],
+        )
+
+# ============================================================
 # REGISTRY CONFIGURATION
 # ============================================================
 
@@ -186,6 +302,9 @@ ALL_CUSTOM_RECOGNIZERS = [
     AWSAccessKeyRecognizer,
     AWSSecretKeyRecognizer,
     JWTRecognizer,
+    InternalIPv4Recognizer,
+    DBConnectionStringRecognizer,
+    PrivateKeyRecognizer,
 ]
 
 
@@ -195,6 +314,9 @@ CUSTOM_ENTITY_TYPES = [
     "AWS_ACCESS_KEY",
     "AWS_SECRET_KEY",
     "JWT_TOKEN",
+    "INTERNAL_IPV4",
+    "DB_CONNECTION_STRING",
+    "PRIVATE_KEY",
 ]
 
 
