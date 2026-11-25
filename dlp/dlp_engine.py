@@ -18,7 +18,7 @@ from dlp.custom_recognizers import (
     register_custom_recognizers,
 )
 from dlp.placeholder_manager import PlaceholderManager
-
+from dlp.masking_policy import MaskingPolicy
 
 # Day 2 built-in entities
 STANDARD_ENTITIES = [
@@ -35,11 +35,21 @@ SUPPORTED_ENTITIES = STANDARD_ENTITIES + CUSTOM_ENTITY_TYPES
 class DLPEngine:
     """Detects and redacts PII and secrets using Presidio."""
 
-    def __init__(self, include_original_value=False):
+    def __init__(
+        self,
+        include_original_value=False,
+        masking_policy=None,
+    ):
         self.include_original_value = include_original_value
 
         self.analyzer = AnalyzerEngine()
         register_custom_recognizers(self.analyzer)
+
+        self._masking_policy = (
+            masking_policy
+            if masking_policy is not None
+            else MaskingPolicy()
+        )
 
     @staticmethod
     def _is_valid_ipv4(value):
@@ -109,22 +119,24 @@ class DLPEngine:
             key=lambda result: result.start,
         )
 
-    def redact(self, text: str):
-        """
-        Detect and redact sensitive information.
+    def redact(self, text: str, role: str = None):
+        """Detect and redact sensitive information.
 
-        Each call creates a fresh placeholder mapping.
+        Day 17:
+        - All entities are detected regardless of role.
+        - Authorized entities remain unmasked.
+        - All other entities receive temporary placeholders.
+        - role=None preserves the original full-masking behavior.
 
         Returns:
-            masked_text: Text containing semantic placeholders.
+            masked_text: Text with unauthorized sensitive values masked.
             entities_found: Detection metadata.
         """
 
         if not text:
             return text, []
 
-        # STEP 1: Lightweight pre-filter.
-        # Skip expensive Presidio analysis when no indicators are found.
+        # STEP 1: Detect all supported entities.
         if might_contain_pii(text):
             results = self.analyzer.analyze(
                 text=text,
@@ -134,54 +146,66 @@ class DLPEngine:
         else:
             results = []
 
-        # STEP 2: Filter false positives and resolve overlapping detections.
+        # STEP 2: Resolve false positives and overlapping detections.
         results = self._resolve_overlaps(results, text)
 
-        # STEP 3: Create a fresh placeholder mapping for this operation.
+        # STEP 3: Prepare placeholders and masking decisions.
         placeholder_manager = PlaceholderManager()
 
-        # Assign placeholders from left to right so numbering follows
-        # the first appearance of each sensitive value.
         replacements = []
+        entities_found = []
 
         for result in results:
             original_value = text[result.start:result.end]
 
-            placeholder = placeholder_manager.get_placeholder(
-                result.entity_type,
-                original_value,
+            should_unmask = (
+                role is not None
+                and self._masking_policy.is_unmasked_for_role(
+                    result.entity_type,
+                    role,
+                )
             )
 
-            replacements.append((result, placeholder))
+            if should_unmask:
+                placeholder = None
+            else:
+                placeholder = placeholder_manager.get_placeholder(
+                    result.entity_type,
+                    original_value,
+                )
 
-        # STEP 4: Replace sensitive values from right to left.
-        # This preserves the original offsets of remaining entities.
+            replacements.append(
+                (result, placeholder, should_unmask)
+            )
+
+            entity = {
+                "entity_type": result.entity_type,
+                "start": result.start,
+                "end": result.end,
+                "score": round(result.score, 3),
+                "original_value": original_value,
+                "placeholder": placeholder,
+                "masked": not should_unmask,
+            }
+
+            entities_found.append(entity)
+
+        # STEP 4: Replace only entities that require masking.
         masked_text = text
 
-        for result, placeholder in reversed(replacements):
+        for result, placeholder, should_unmask in reversed(replacements):
+            if should_unmask:
+                continue
+
             masked_text = (
                 masked_text[:result.start]
                 + placeholder
                 + masked_text[result.end:]
             )
 
-        # STEP 5: Collect detection metadata.
-        entities_found = []
-
-        for result, placeholder in replacements:
-            entity = {
-                "entity_type": result.entity_type,
-                "start": result.start,
-                "end": result.end,
-                "score": round(result.score, 3),
-                "placeholder": placeholder,
-            }
-
-            if self.include_original_value:
-                entity["original_value"] = text[
-                    result.start:result.end
-                ]
-
-            entities_found.append(entity)
+        # STEP 5: Preserve the existing optional original-value behavior.
+        if not self.include_original_value:
+            for entity in entities_found:
+                entity.pop("original_value", None)
 
         return masked_text, entities_found

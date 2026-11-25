@@ -109,36 +109,56 @@ class DLPInterceptor:
             if current[0] < previous[1]:
                 raise ValueError("Entity offsets must not overlap")
 
-    def redact(self, text: str, session_id: str):
-        """Mask sensitive information and allocate shared placeholders."""
+    def redact(self, text: str, session_id: str, role: str = None):
+        """Mask sensitive information using role-based masking policy."""
         self._validate_session_id(session_id)
 
         if not isinstance(text, str):
             raise TypeError("text must be a string")
 
         with self._lock:
-            _, entities_found = self._engine.redact(text)
+            # Detect entities and apply the role-based masking policy.
+            _, entities_found = self._engine.redact(text, role=role)
 
             if not entities_found:
                 return text, []
 
-            # Validate all detection metadata before writing to Redis.
+            # Validate every detection, including authorized unmasked values.
             self._validate_entities(text, entities_found)
 
-            # Allocate placeholders through Redis.
+            # The engine must explicitly mark every entity's masking decision.
+            if not all(
+                isinstance(entity.get("masked"), bool)
+                for entity in entities_found
+            ):
+                raise ValueError("Every entity must have a valid masked flag")
+
+            # Only masked entities should be stored in Redis.
+            maskable_entities = [
+                entity for entity in entities_found
+                if entity["masked"]
+            ]
+
+            # No Redis allocation is necessary if everything is authorized.
+            if not maskable_entities:
+                for entity in entities_found:
+                    entity.pop("original_value", None)
+
+                return text, entities_found
+
+            # Allocate placeholders only for entities that need masking.
             placeholders = self._vault.allocate_placeholders(
                 session_id,
-                entities_found,
+                maskable_entities,
             )
 
-            # Validate the complete allocation response before modifying
-            # entity metadata or constructing the masked response.
+            # Validate the complete allocation response before modifying text.
             if not isinstance(placeholders, list):
                 raise RuntimeError(
                     "Vault must return a list of placeholders"
                 )
 
-            if len(placeholders) != len(entities_found):
+            if len(placeholders) != len(maskable_entities):
                 raise RuntimeError(
                     "Vault returned an unexpected number of placeholders"
                 )
@@ -151,11 +171,14 @@ class DLPInterceptor:
                 raise RuntimeError(
                     "Vault returned an invalid placeholder"
                 )
-            # Repeated values may legitimately reuse a placeholder.
+
             # A placeholder must never represent different entities.
             placeholder_owners = {}
 
-            for entity, placeholder in zip(entities_found, placeholders):
+            for entity, placeholder in zip(
+                maskable_entities,
+                placeholders,
+            ):
                 owner = (
                     entity["entity_type"],
                     entity["original_value"],
@@ -170,10 +193,11 @@ class DLPInterceptor:
 
                 placeholder_owners[placeholder] = owner
 
+            # Prepare replacements using original text offsets.
             replacements = []
 
             for entity, placeholder in zip(
-                entities_found,
+                maskable_entities,
                 placeholders,
             ):
                 replacements.append((
@@ -182,12 +206,15 @@ class DLPInterceptor:
                     placeholder,
                 ))
 
-            # Only update metadata after the complete response is validated.
+            # Update metadata only after the complete allocation is validated.
             for entity, placeholder in zip(
-                entities_found,
+                maskable_entities,
                 placeholders,
             ):
                 entity["placeholder"] = placeholder
+
+            # Never expose original sensitive values in returned metadata.
+            for entity in entities_found:
                 entity.pop("original_value", None)
 
             # Replace from right to left to preserve original offsets.

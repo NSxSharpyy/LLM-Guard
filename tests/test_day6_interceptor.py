@@ -4,6 +4,7 @@ import pytest
 from dlp import DLPInterceptor
 from concurrent.futures import ThreadPoolExecutor
 
+
 @pytest.fixture
 def interceptor():
     instance = DLPInterceptor(redis_db=15)
@@ -248,13 +249,14 @@ def test_allocation_exception_does_not_leave_partial_session(
 ):
     session = "allocation-error-session"
 
-    def fake_engine_redact(text):
+    def fake_engine_redact(text, role=None):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": 8,
                 "end": 24,
                 "original_value": "john@example.com",
+                "masked": True,
             }
         ]
 
@@ -289,7 +291,6 @@ def test_allocation_exception_preserves_existing_session(
 ):
     session = "existing-session-error"
 
-    # First redaction succeeds and creates EMAIL_1.
     masked_text, _ = interceptor.redact(
         "Contact john@example.com",
         session,
@@ -303,13 +304,14 @@ def test_allocation_exception_preserves_existing_session(
         "<EMAIL_1>": "john@example.com"
     }
 
-    def fake_engine_redact(text):
+    def fake_engine_redact(text, role=None):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": 8,
                 "end": 24,
                 "original_value": "jane@example.com",
+                "masked": True,
             }
         ]
 
@@ -334,13 +336,13 @@ def test_allocation_exception_preserves_existing_session(
             session,
         )
 
-    # Existing Redis mappings must remain unchanged.
     assert interceptor._vault.get_mapping(session) == original_mapping
 
     assert interceptor.unmask(
         "Contact <EMAIL_1>",
         session,
     ) == "Contact john@example.com"
+
 
 def test_independent_interceptors_do_not_collide(interceptor):
     session = "cross-worker-session"
@@ -424,7 +426,7 @@ def test_invalid_entity_metadata_rejected_before_allocation(
     session = "invalid-metadata-session"
     allocation_called = False
 
-    def fake_engine_redact(text):
+    def fake_engine_redact(text, role=None):
         return text, [invalid_entity]
 
     def track_allocation(session_id, entities):
@@ -460,13 +462,14 @@ def test_entity_offsets_must_be_integers(
 ):
     session = "invalid-offset-type-session"
 
-    def fake_engine_redact(text):
+    def fake_engine_redact(text, role=None):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": "8",
                 "end": 24,
                 "original_value": "john@example.com",
+                "masked": True,
             }
         ]
 
@@ -492,19 +495,21 @@ def test_overlapping_entity_offsets_rejected_before_allocation(
     session = "overlapping-entities-session"
     allocation_called = False
 
-    def fake_engine_redact(text):
+    def fake_engine_redact(text, role=None):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": 8,
                 "end": 24,
                 "original_value": "john@example.com",
+                "masked": True,
             },
             {
                 "entity_type": "PHONE_NUMBER",
                 "start": 13,
                 "end": 20,
                 "original_value": "example",
+                "masked": True,
             },
         ]
 
@@ -554,13 +559,14 @@ def test_invalid_vault_placeholder_response_rejected(
 ):
     session = "invalid-placeholder-session"
 
-    def fake_engine_redact(text):
+    def fake_engine_redact(text, role=None):
         return text, [
             {
                 "entity_type": "EMAIL_ADDRESS",
                 "start": 8,
                 "end": 24,
                 "original_value": "john@example.com",
+                "masked": True,
             },
         ]
 
@@ -584,6 +590,7 @@ def test_invalid_vault_placeholder_response_rejected(
             "Contact john@example.com",
             session,
         )
+
 
 def test_repeated_value_in_same_text_reuses_placeholder(interceptor):
     text = (
