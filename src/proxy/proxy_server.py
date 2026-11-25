@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
 from src.proxy.metrics import GuardRuntimeMetrics
+from src.proxy.payload_guard import inspect_request_limits
 from src.security.auth import TenantContext, authenticate_request
 from src.security.pii_guard import inspect_and_sanitize_payload
 from src.security.prompt_guard import inspect_chat_payload
@@ -80,6 +81,7 @@ async def healthcheck() -> dict[str, object]:
         "guardrails": [
             "auth",
             "sliding_window_rate_limiter",
+            "payload_guard",
             "prompt_guard",
             "pii_dlp_guard",
             "output_guard",
@@ -214,6 +216,35 @@ async def proxy_chat_completions(request: Request) -> Response:
             status_code=400,
             content={"detail": "Malformed JSON payload"},
             headers={"X-Trace-Id": trace_id},
+        )
+
+    # Stage 2.5: Request Byte Size & Message Turn Limits
+    payload_verdict = inspect_request_limits(raw_body=raw_body, parsed_body=parsed_body)
+    if payload_verdict.blocked:
+        latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await state.metrics.record_block("payload_guard")
+        await state.siem_logger.log_event(
+            trace_id=trace_id,
+            client_ip=client_ip,
+            user_id=tenant.user_id,
+            user_role=tenant.user_role,
+            action="BLOCK",
+            rule_id=payload_verdict.rule_id,
+            ml_score=payload_verdict.risk_score,
+            latency_ms=latency_ms,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Blocked by LLM-Guard Payload Policy ({payload_verdict.rule_id}): {payload_verdict.reason}",
+                "rule_id": payload_verdict.rule_id,
+                "trace_id": trace_id,
+            },
+            headers={
+                "X-Trace-Id": trace_id,
+                "X-Tenant-Id": tenant.tenant_id,
+                "X-Guard-Rule-Id": payload_verdict.rule_id,
+            },
         )
 
     # Stage 3: Pre-Inference Prompt Injection & Jailbreak Guardrail
