@@ -258,6 +258,25 @@ st.sidebar.info(
 )
 
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("Detection Controls")
+
+st.sidebar.slider(
+    "ML Detection Sensitivity",
+    min_value=0.50,
+    max_value=0.95,
+    value=0.75,
+    step=0.05,
+    key="ml_detection_sensitivity",
+)
+
+st.sidebar.toggle(
+    "Strict Mode",
+    value=False,
+    key="strict_mode",
+)
+
+
 
 # Keep one reader per Streamlit browser session so file offsets and
 # cumulative counters survive periodic fragment reruns.
