@@ -1,0 +1,25 @@
+services:
+  redis-day18:
+    image: redis:7-alpine
+    container_name: llm-guard-redis-day18
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6380:6379"
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - volatile-lru
+    volumes:
+      - llm_guard_redis_day18_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  llm_guard_redis_day18_data:

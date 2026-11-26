@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-11-26T07:12:27.382756+00:00",
+  "redis": {
+    "host": "127.0.0.1",
+    "port": 6380,
+    "database": 14,
+    "policy": "volatile-lru",
+    "maxmemory_bytes": 268435456
+  },
+  "simulation": {
+    "run_prefix": "day18_c5dd14c7c46b42a69de6d6cde87737a5",
+    "sessions": 10000,
+    "mappings": 39999,
+    "ttl_seconds": 60,
+    "wait_seconds": 65,
+    "load_duration_seconds": 7.152
+  },
+  "memory": {
+    "baseline": {
+      "used_memory_bytes": 1525528,
+      "used_memory_human": "1.45M",
+      "used_memory_rss_bytes": 8663040,
+      "dbsize": 0
+    },
+    "after_load": {
+      "used_memory_bytes": 15656560,
+      "used_memory_human": "14.93M",
+      "used_memory_rss_bytes": 22589440,
+      "dbsize": 49999
+    },
+    "after_ttl_expiry": {
+      "used_memory_bytes": 1510752,
+      "used_memory_human": "1.44M",
+      "used_memory_rss_bytes": 13111296,
+      "dbsize": 0
+    },
+    "increase_bytes": 14131032,
+    "average_increase_bytes_per_session": 1413.1,
+    "estimated_capacity_sessions": 188882,
+    "estimated_additional_memory_bytes": {
+      "100000": 141310320,
+      "1000000": 1413103200
+    }
+  },
+  "ttl_cleanup": {
+    "keys_after_load": 49999,
+    "keys_remaining_after_ttl": 0,
+    "passed": true
+  },
+  "notes": [
+    "All stored values are synthetic test data.",
+    "Memory estimates are workload-specific extrapolations.",
+    "Redis allocator fragmentation can prevent used_memory from returning exactly to its baseline.",
+    "volatile-lru only evicts keys that have an expiration set."
+  ]
+}

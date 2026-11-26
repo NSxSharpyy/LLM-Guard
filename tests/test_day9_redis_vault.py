@@ -6,7 +6,7 @@ from dlp.redis_vault import RedisVault
 
 @pytest.fixture
 def vault():
-    instance = RedisVault(db=15, ttl_seconds=60)
+    instance = RedisVault(host="127.0.0.1", port=6380, db=15, ttl_seconds=60)
     instance._redis.flushdb()
     yield instance
     instance._redis.flushdb()
@@ -234,7 +234,7 @@ def test_mapping_expires_after_ttl(vault):
 
 
 def test_default_ttl_is_900_seconds():
-    vault = RedisVault(db=15)
+    vault = RedisVault(host="127.0.0.1", port=6380, db=15)
     assert vault.ttl_seconds == 900
 
 
@@ -279,7 +279,7 @@ def test_unmask_empty_text_rejects_invalid_session(vault):
         vault.unmask_text("", "")
 
 def test_independent_vault_instances_share_data(vault):
-    second_vault = RedisVault(db=15, ttl_seconds=60)
+    second_vault = RedisVault(host="127.0.0.1", port=6380, db=15, ttl_seconds=60)
 
     vault.store("shared-session", {
         "<EMAIL_1>": "john@example.com"
@@ -380,7 +380,7 @@ def test_rejects_short_hmac_secret(monkeypatch):
     monkeypatch.setenv("DLP_HMAC_SECRET", "short-secret")
 
     with pytest.raises(ValueError, match="at least 32 bytes"):
-        RedisVault(db=15)
+        RedisVault(host="127.0.0.1", port=6380, db=15)
 
 def test_store_refreshes_mapping_ttl(vault):
     vault.ttl_seconds = 3
