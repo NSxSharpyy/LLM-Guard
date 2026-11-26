@@ -12,6 +12,7 @@ from starlette.requests import ClientDisconnect
 from src.proxy.metrics import GuardRuntimeMetrics
 from src.proxy.payload_guard import inspect_request_limits
 from src.security.auth import TenantContext, authenticate_request
+from src.security.canary_guard import inspect_canary_payload, inspect_canary_text
 from src.security.pii_guard import inspect_and_sanitize_payload
 from src.security.prompt_guard import inspect_chat_payload
 from src.security.rate_limiter import SlidingWindowRateLimiter
@@ -82,6 +83,7 @@ async def healthcheck() -> dict[str, object]:
             "auth",
             "sliding_window_rate_limiter",
             "payload_guard",
+            "canary_guard",
             "prompt_guard",
             "pii_dlp_guard",
             "output_guard",
@@ -247,6 +249,35 @@ async def proxy_chat_completions(request: Request) -> Response:
             },
         )
 
+    # Stage 2.8: Pre-Inference Canary-Token Exfiltration Check
+    canary_in_verdict = inspect_canary_payload(parsed_body)
+    if canary_in_verdict.blocked:
+        latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await state.metrics.record_block("canary_guard")
+        await state.siem_logger.log_event(
+            trace_id=trace_id,
+            client_ip=client_ip,
+            user_id=tenant.user_id,
+            user_role=tenant.user_role,
+            action="BLOCK",
+            rule_id=canary_in_verdict.rule_id,
+            ml_score=canary_in_verdict.risk_score,
+            latency_ms=latency_ms,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Blocked by LLM-Guard Canary Policy ({canary_in_verdict.rule_id}): {canary_in_verdict.reason}",
+                "rule_id": canary_in_verdict.rule_id,
+                "trace_id": trace_id,
+            },
+            headers={
+                "X-Trace-Id": trace_id,
+                "X-Tenant-Id": tenant.tenant_id,
+                "X-Guard-Rule-Id": canary_in_verdict.rule_id,
+            },
+        )
+
     # Stage 3: Pre-Inference Prompt Injection & Jailbreak Guardrail
     guard_verdict = inspect_chat_payload(parsed_body)
     if guard_verdict.blocked:
@@ -403,6 +434,36 @@ async def proxy_chat_completions(request: Request) -> Response:
         raise HTTPException(
             status_code=504,
             detail="Gateway Timeout: Upstream LLM engine exceeded response deadline",
+        )
+
+    # Stage 5: Post-Inference Unary Canary-Token Exfiltration Check
+    upstream_text = upstream_resp.content.decode("utf-8", errors="replace")
+    canary_out_verdict = inspect_canary_text(upstream_text)
+    if canary_out_verdict.blocked:
+        total_latency_ms = (time.perf_counter() - t_req_start) * 1000.0
+        await state.metrics.record_block("canary_guard")
+        await state.siem_logger.log_event(
+            trace_id=trace_id,
+            client_ip=client_ip,
+            user_id=tenant.user_id,
+            user_role=tenant.user_role,
+            action="BLOCK",
+            rule_id=canary_out_verdict.rule_id,
+            ml_score=canary_out_verdict.risk_score,
+            latency_ms=total_latency_ms,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Blocked by LLM-Guard Canary Policy ({canary_out_verdict.rule_id}): {canary_out_verdict.reason}",
+                "rule_id": canary_out_verdict.rule_id,
+                "trace_id": trace_id,
+            },
+            headers={
+                "X-Trace-Id": trace_id,
+                "X-Tenant-Id": tenant.tenant_id,
+                "X-Guard-Rule-Id": canary_out_verdict.rule_id,
+            },
         )
 
     transit_latency_ms = (time.perf_counter() - t_upstream_start) * 1000.0
