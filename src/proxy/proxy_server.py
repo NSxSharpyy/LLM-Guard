@@ -106,15 +106,68 @@ async def guard_stats(request: Request) -> dict[str, object]:
 
 async def stream_upstream_bytes(
     upstream_resp: httpx.Response,
+    *,
+    trace_id: str,
+    client_ip: str,
+    tenant: TenantContext,
+    dlp_rule_id: str,
+    dlp_risk_score: float,
+    pii_redacted: bool,
+    t_req_start: float,
 ) -> AsyncGenerator[bytes, None]:
     """
     Zero-buffer async generator yielding raw SSE chunks directly as they arrive
-    from the upstream LLM without accumulating the full response in RAM.
+    from the upstream LLM while inspecting a sliding tail window for canary leaks.
     """
+    rolling_window = ""
+    canary_triggered = False
     try:
         async for chunk in upstream_resp.aiter_raw():
-            if chunk:
-                yield chunk
+            if not chunk:
+                continue
+            decoded = chunk.decode("utf-8", errors="replace")
+            rolling_window = (rolling_window + decoded)[-256:]
+            verdict = inspect_canary_text(rolling_window)
+            if verdict.blocked:
+                canary_triggered = True
+                total_guard_ms = (time.perf_counter() - t_req_start) * 1000.0
+                await state.metrics.record_block("canary_guard")
+                await state.siem_logger.log_event(
+                    trace_id=trace_id,
+                    client_ip=client_ip,
+                    user_id=tenant.user_id,
+                    user_role=tenant.user_role,
+                    action="BLOCK",
+                    rule_id=verdict.rule_id,
+                    ml_score=verdict.risk_score,
+                    latency_ms=total_guard_ms,
+                )
+                alert_payload = json.dumps(
+                    {
+                        "error": {
+                            "message": f"Blocked by LLM-Guard Canary Policy ({verdict.rule_id})",
+                            "rule_id": verdict.rule_id,
+                            "trace_id": trace_id,
+                        }
+                    }
+                )
+                yield f"data: {alert_payload}\n\ndata: [DONE]\n\n".encode("utf-8")
+                break
+            yield chunk
+
+        if not canary_triggered:
+            total_guard_ms = (time.perf_counter() - t_req_start) * 1000.0
+            await state.metrics.record_allow(pii_redacted=pii_redacted)
+            await state.siem_logger.log_event(
+                trace_id=trace_id,
+                client_ip=client_ip,
+                user_id=tenant.user_id,
+                user_role=tenant.user_role,
+                action="ALLOW",
+                rule_id=dlp_rule_id,
+                ml_score=dlp_risk_score,
+                latency_ms=total_guard_ms,
+            )
     except (ClientDisconnect, GeneratorExit):
         pass
     finally:
@@ -389,19 +442,6 @@ async def proxy_chat_completions(request: Request) -> Response:
             )
 
         ttft_ms = (time.perf_counter() - t_upstream_start) * 1000.0
-        total_guard_ms = (time.perf_counter() - t_req_start) * 1000.0
-
-        await state.metrics.record_allow(pii_redacted=dlp_verdict.redacted)
-        await state.siem_logger.log_event(
-            trace_id=trace_id,
-            client_ip=client_ip,
-            user_id=tenant.user_id,
-            user_role=tenant.user_role,
-            action="ALLOW",
-            rule_id=dlp_verdict.rule_id,
-            ml_score=dlp_verdict.risk_score,
-            latency_ms=total_guard_ms,
-        )
 
         stream_headers = {
             "Cache-Control": "no-cache",
@@ -412,7 +452,16 @@ async def proxy_chat_completions(request: Request) -> Response:
         }
 
         return StreamingResponse(
-            stream_upstream_bytes(upstream_resp),
+            stream_upstream_bytes(
+                upstream_resp,
+                trace_id=trace_id,
+                client_ip=client_ip,
+                tenant=tenant,
+                dlp_rule_id=dlp_verdict.rule_id,
+                dlp_risk_score=dlp_verdict.risk_score,
+                pii_redacted=dlp_verdict.redacted,
+                t_req_start=t_req_start,
+            ),
             status_code=upstream_resp.status_code,
             headers=stream_headers,
             media_type="text/event-stream",

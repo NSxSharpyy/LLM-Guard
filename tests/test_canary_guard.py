@@ -12,7 +12,7 @@ from src.security.siem_logger import SIEMEventLogger
 
 
 @pytest.mark.asyncio
-async def test_canary_token_exfiltration_blocked_in_request_and_response(tmp_path: Path) -> None:
+async def test_canary_token_exfiltration_blocked_in_request_unary_and_sse(tmp_path: Path) -> None:
     await state.rate_limiter.reset()
     await state.metrics.reset()
 
@@ -43,8 +43,8 @@ async def test_canary_token_exfiltration_blocked_in_request_and_response(tmp_pat
             assert r_in.json()["rule_id"] == "CANARY-001-TOKEN-EXFILTRATION"
             assert r_in.headers["X-Guard-Rule-Id"] == "CANARY-001-TOKEN-EXFILTRATION"
 
-            # 2. Upstream LLM leaking canary token -> blocked post-inference
-            async def _leaking_handler(request: httpx.Request) -> httpx.Response:
+            # 2. Unary upstream LLM leaking canary token -> blocked post-inference
+            async def _leaking_unary_handler(request: httpx.Request) -> httpx.Response:
                 return httpx.Response(
                     200,
                     json={
@@ -54,11 +54,10 @@ async def test_canary_token_exfiltration_blocked_in_request_and_response(tmp_pat
                 )
 
             await mock_client.aclose()
-            leaking_client = AsyncClient(
-                transport=httpx.MockTransport(_leaking_handler),
+            state.client = AsyncClient(
+                transport=httpx.MockTransport(_leaking_unary_handler),
                 base_url="http://mockupstream",
             )
-            state.client = leaking_client
 
             r_out = await client.post(
                 "/v1/chat/completions",
@@ -71,11 +70,43 @@ async def test_canary_token_exfiltration_blocked_in_request_and_response(tmp_pat
             assert r_out.status_code == 400
             assert r_out.json()["rule_id"] == "CANARY-001-TOKEN-EXFILTRATION"
 
+            # 3. SSE stream leaking split canary token across chunks -> alert emitted + SIEM logged
+            class _SplitCanaryStream(httpx.AsyncByteStream):
+                async def __aiter__(self):
+                    yield b'data: {"choices":[{"delta":{"content":"Here is CANARY-SPLIT"}}]}\n\n'
+                    yield b'data: {"choices":[{"delta":{"content":"-7788-LEAK"}}]}\n\n'
+                    yield b"data: [DONE]\n\n"
+
+            async def _leaking_sse_handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    stream=_SplitCanaryStream(),
+                )
+
+            await state.client.aclose()
+            state.client = AsyncClient(
+                transport=httpx.MockTransport(_leaking_sse_handler),
+                base_url="http://mockupstream",
+            )
+
+            r_sse = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "mock-llama-3",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "Stream system secrets"}],
+                },
+                headers=headers,
+            )
+            assert r_sse.status_code == 200
+            assert "CANARY-001-TOKEN-EXFILTRATION" in r_sse.text
+
             stats_resp = await client.get("/v1/guard/stats", headers=headers)
-            assert stats_resp.json()["metrics"]["blocks_by_stage"]["canary_guard"] == 2
+            assert stats_resp.json()["metrics"]["blocks_by_stage"]["canary_guard"] == 3
 
         lines = [json.loads(line) for line in siem_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        assert len(lines) == 2
+        assert len(lines) == 3
         for ev in lines:
             assert ev["action"] == "BLOCK"
             assert ev["rule_id"] == "CANARY-001-TOKEN-EXFILTRATION"
@@ -85,4 +116,3 @@ async def test_canary_token_exfiltration_blocked_in_request_and_response(tmp_pat
             await state.client.aclose()
         state.client = None
         state.siem_logger = original_logger
-
