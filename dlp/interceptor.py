@@ -234,6 +234,11 @@ class DLPInterceptor:
         self._validate_session_id(session_id)
         return self._vault.unmask_text(text, session_id)
 
+    def unmask_json(self, masked_json: str, session_id: str) -> str:
+        """Restore placeholders in JSON while preserving JSON integrity."""
+        self._validate_session_id(session_id)
+        return self._vault.unmask_json(masked_json, session_id)
+
     def scan_output(self, final_response: str, session_id: str):
         """Scan a final LLM response for unexpected PII.
 

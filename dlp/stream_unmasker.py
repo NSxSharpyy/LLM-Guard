@@ -14,9 +14,13 @@ PARTIAL_TAG_PATTERN = re.compile(r"<(?:[A-Z_][A-Z_0-9]*)?")
 class StreamUnmasker:
     """Buffers incomplete placeholder fragments during streaming."""
 
-    def __init__(self, vault, session_id: str):
+    def __init__(self, vault, session_id, json_mode=False):
+        if not isinstance(json_mode, bool):
+            raise TypeError("json_mode must be a boolean")
+
         self._vault = vault
         self._session_id = session_id
+        self._json_mode = json_mode
         self._buffer = ""
         self._closed = False
 
@@ -30,7 +34,8 @@ class StreamUnmasker:
             raise TypeError("chunk must be a string")
 
         self._buffer += chunk
-
+        if self._json_mode:
+            return ""
         last_open = self._buffer.rfind("<")
         last_close = self._buffer.rfind(">")
 
@@ -51,15 +56,19 @@ class StreamUnmasker:
 
         return self._unmask(safe_part)
 
-    def flush(self) -> str:
-        """Release remaining buffered text at the end of streaming."""
-
+    def flush(self):
         if self._closed:
-            raise RuntimeError("flush() has already been called")
+            raise RuntimeError("Cannot flush: StreamUnmasker is already closed")
 
         remaining = self._buffer
         self._buffer = ""
         self._closed = True
+
+        if self._json_mode:
+            return self._vault.unmask_json(
+                remaining,
+                self._session_id,
+            )
 
         return self._unmask(remaining)
 

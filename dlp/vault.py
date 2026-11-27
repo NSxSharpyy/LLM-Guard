@@ -3,10 +3,9 @@
 
 Stores placeholder -> original_value mappings per session_id.
 """
-
+import json
 import re
 import threading
-
 
 # Matches placeholders such as <EMAIL_1>, <AWS_KEY_12>
 PLACEHOLDER_PATTERN = re.compile(r"<([A-Z_]+\d+)>")
@@ -48,6 +47,51 @@ class Vault:
             return session_mapping.get(placeholder, placeholder)
 
         return PLACEHOLDER_PATTERN.sub(replace_placeholder, masked_text)
+
+    def unmask_json(self, masked_json: str, session_id: str) -> str:
+        """Restore placeholders while preserving valid JSON structure."""
+
+        if not isinstance(masked_json, str):
+            raise TypeError("masked_json must be a string")
+
+        try:
+            def reject_non_standard_constant(value):
+                raise ValueError(f"Invalid JSON constant: {value}")
+
+            data = json.loads(
+                masked_json,
+                parse_constant=reject_non_standard_constant,
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError("masked_json must contain valid JSON") from exc
+
+        with self._lock:
+            session_mapping = dict(self._store.get(session_id, {}))
+
+        def restore(value):
+            if isinstance(value, str):
+                return PLACEHOLDER_PATTERN.sub(
+                    lambda match: session_mapping.get(
+                        match.group(0),
+                        match.group(0),
+                    ),
+                    value,
+                )
+
+            if isinstance(value, list):
+                return [restore(item) for item in value]
+
+            if isinstance(value, dict):
+                return {
+                    key: restore(item)
+                    for key, item in value.items()
+                }
+
+            return value
+
+        restored_data = restore(data)
+
+        return json.dumps(restored_data, ensure_ascii=False)
 
     def clear_session(self, session_id: str) -> None:
         """Remove all mappings belonging to a session."""

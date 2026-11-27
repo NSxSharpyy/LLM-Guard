@@ -6,11 +6,11 @@ Each mapping expires after the configured TTL.
 
 import hashlib
 import hmac
+import json
 import os
 import re
 
 import redis
-
 from dlp.vault import PLACEHOLDER_PATTERN
 
 
@@ -314,6 +314,52 @@ class RedisVault:
             return session_mapping.get(placeholder, placeholder)
 
         return PLACEHOLDER_PATTERN.sub(replace_placeholder, masked_text)
+
+    def unmask_json(self, masked_json: str, session_id: str) -> str:
+        """Restore placeholders while preserving valid JSON structure."""
+
+        self._session_prefix(session_id)
+
+        if not isinstance(masked_json, str):
+            raise TypeError("masked_json must be a string")
+
+        try:
+            def reject_non_standard_constant(value):
+                raise ValueError(f"Invalid JSON constant: {value}")
+
+            data = json.loads(
+                masked_json,
+                parse_constant=reject_non_standard_constant,
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError("masked_json must contain valid JSON") from exc
+
+        session_mapping = self.get_mapping(session_id)
+
+        def restore(value):
+            if isinstance(value, str):
+                return PLACEHOLDER_PATTERN.sub(
+                    lambda match: session_mapping.get(
+                        match.group(0),
+                        match.group(0),
+                    ),
+                    value,
+                )
+
+            if isinstance(value, list):
+                return [restore(item) for item in value]
+
+            if isinstance(value, dict):
+                return {
+                    key: restore(item)
+                    for key, item in value.items()
+                }
+
+            return value
+
+        restored_data = restore(data)
+
+        return json.dumps(restored_data, ensure_ascii=False)
 
     def clear_session(self, session_id: str) -> None:
         """Atomically remove all indexed data associated with a session."""
