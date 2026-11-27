@@ -22,7 +22,7 @@ import streamlit as st
 from dashboard.event_reader import JsonlEventTailReader
 from dashboard.latency_reader import JsonlLatencyTailReader
 from dashboard.event_filters import filter_events
-from dashboard.alerts import HighSeverityAlertTracker
+from dashboard.alerts import CanaryTokenAlertTracker, HighSeverityAlertTracker
 from dashboard.batch_reader import BatchProgressReader
 from dashboard.event_table import SORTABLE_FIELDS, paginate_events, sort_events, status_badge
 from dashboard.analytics import action_distribution, hourly_volume, top_rule_counts
@@ -301,11 +301,15 @@ if "day14_batch_reader" not in st.session_state:
 if "alert_tracker" not in st.session_state:
     st.session_state.alert_tracker = HighSeverityAlertTracker()
 
+if "canary_alert_tracker" not in st.session_state:
+    st.session_state.canary_alert_tracker = CanaryTokenAlertTracker()
+
 
 def poll_security_events():
-    """Poll telemetry and pass newly appended events to the alert tracker."""
+    """Poll telemetry and pass new events to both alert trackers."""
     snapshot = st.session_state.event_reader.poll()
     st.session_state.alert_tracker.ingest(snapshot.new_events)
+    st.session_state.canary_alert_tracker.ingest(snapshot.new_events)
     return snapshot
 
 
@@ -634,6 +638,38 @@ def render_live_telemetry():
     render_day14_batch_panel(batch_snapshot)
 
     alert_tracker = st.session_state.alert_tracker
+    canary_alert_tracker = st.session_state.canary_alert_tracker
+
+    # Canary notifications are independent of generic high-severity alerts.
+    for event in canary_alert_tracker.consume_notifications():
+        st.toast(
+            f"CANARY TOKEN EXFILTRATION DETECTED: {event['rule_id']} "
+            f"(confidence {float(event['ml_score']) * 100:.1f}%)",
+            icon="🚨",
+            duration="long",
+        )
+
+    if canary_alert_tracker.alerts:
+        st.subheader("🚨 Canary-Token Exfiltration Alerts")
+
+        if st.button(
+            "Dismiss canary alerts",
+            key="dismiss_canary_alerts",
+        ):
+            canary_alert_tracker.clear()
+
+        for event in list(canary_alert_tracker.alerts):
+            st.error(
+                "**CANARY TOKEN EXFILTRATION DETECTED**\n\n"
+                f"**Rule:** {event['rule_id']}  |  "
+                f"**Confidence:** {float(event['ml_score']) * 100:.1f}%\n\n"
+                f"**Client IP:** {event['client_ip']}  |  "
+                f"**User:** {event['user_id']} ({event['user_role']})\n\n"
+                f"**Action:** {event['action']}  |  "
+                f"**Timestamp:** {event['timestamp']}\n\n"
+                f"**Trace ID:** `{event['trace_id']}`",
+                icon="🚨",
+            )
 
     # Toast notifications are consumed once; persistent banners remain visible.
     for event in alert_tracker.consume_notifications():
